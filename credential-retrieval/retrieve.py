@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -23,10 +24,31 @@ MAX_SINF_BYTES = 1 << 20
 
 
 def connected_udid() -> str:
-    devices = subprocess.run(["idevice_id", "-l"], capture_output=True, text=True, check=True, timeout=10).stdout.splitlines()
+    try:
+        result = subprocess.run(["ipsw", "idev", "list", "--json", "--no-color"], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError as exc:
+        raise RuntimeError("ipsw is not installed") from exc
+    if result.returncode:
+        message = (result.stdout + result.stderr).strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"ipsw idev list failed: {message}")
+    payload = result.stdout.strip()
+    if not payload:
+        devices = []
+    else:
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("ipsw idev list did not return JSON") from exc
+        if not isinstance(parsed, list):
+            raise RuntimeError("ipsw idev list JSON must be an array")
+        devices = []
+        for item in parsed:
+            if not isinstance(item, dict) or "unique_device_id" not in item:
+                raise RuntimeError("ipsw idev list JSON is missing unique_device_id")
+            devices.append(normalize_udid(item["unique_device_id"]))
     if len(devices) != 1:
         raise RuntimeError(f"connect exactly one device; found {len(devices)}")
-    return normalize_udid(devices[0])
+    return devices[0]
 
 
 def normalize_udid(value: str) -> str:

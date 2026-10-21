@@ -1,7 +1,7 @@
 # Credential retrieval
 
 Retrieve a reusable 16-byte FairPlay account credential from a jailbroken
-device. The host needs Python, `idevice_id`, `iproxy`, and USB SSH. The device
+device. The host needs Python, `ipsw`, and USB SSH. The device
 runs native programs only; it does not need Python or Frida.
 
 Tested on iOS 14 and iOS 18.
@@ -13,7 +13,7 @@ least one App Store app on that device. From the project root:
 
 ```sh
 make
-python3 credential-retrieval/retrieve.py --output-dir /path/to/new-output-directory
+uv run python credential-retrieval/retrieve.py --output-dir /path/to/new-output-directory
 ```
 
 The retriever uses the first installed app with a supported license. To

@@ -13,12 +13,11 @@ eight zero bytes. The iOS 26+ license format is not supported.
 
 ## Set up
 
-From this directory, with Python 3.10+ and a C compiler:
+From this directory, with Python 3.10+, `uv`, and a C compiler:
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
+uv venv
+uv pip install -r requirements.txt
 make
 ```
 
@@ -28,7 +27,7 @@ Xcode and `ldid`. On Linux, it builds the decryptor.
 ## Decrypt
 
 ```sh
-python decrypt.py /path/to/encrypted.ipa /path/to/decrypted.ipa \
+uv run python decrypt.py /path/to/encrypted.ipa /path/to/decrypted.ipa \
   --credential /path/to/credential.bin
 ```
 

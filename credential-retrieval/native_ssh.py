@@ -21,7 +21,14 @@ class SSHDevice:
             with socket.create_connection(("127.0.0.1", port), timeout=1):
                 pass
         except OSError:
-            self.tunnel = subprocess.Popen(["iproxy", "-u", udid, f"{port}:22"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                self.tunnel = subprocess.Popen(
+                    ["ipsw", "idev", "proxy", "--no-color", "-u", udid, "--lport", str(port), "--rport", "22"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("ipsw is not installed") from exc
             atexit.register(self.close)
             for _ in range(30):
                 if self.tunnel.poll() is not None:
