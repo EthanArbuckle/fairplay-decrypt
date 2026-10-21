@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 from pathlib import Path
 import plistlib
 import re
-import select
 import shlex
 import subprocess
 import time
@@ -162,15 +162,52 @@ def trigger_app(device: SSHDevice, license_bytes: bytes | None) -> tuple[str, st
     raise RuntimeError("no installed App Store app has a supported license for the selected account")
 
 
-def fairplayd_pid(device: SSHDevice) -> int:
-    listing = device.run("ps -e -o pid,comm").decode("utf-8", "replace")
+FAIRPLAYD_PROCESS = re.compile(r"fairplayd(?:\.[A-Za-z][0-9]+)?$")
+
+
+def process_listing(device: SSHDevice) -> str:
+    return device.run("ps -axww").decode("utf-8", "replace")
+
+
+def fairplayd_pids(listing: str) -> list[int]:
     pids = []
     for line in listing.splitlines():
-        fields = line.strip().split(None, 1)
-        if len(fields) == 2 and fields[0].isdigit() and re.fullmatch(r"fairplayd(?:\.A[0-9]+)?", Path(fields[1]).name):
+        fields = line.split()
+        if len(fields) < 2 or not fields[0].isdigit():
+            continue
+        names = {Path(part).name for part in fields[1:]}
+        if any(FAIRPLAYD_PROCESS.fullmatch(name) for name in names):
             pids.append(int(fields[0]))
+    return pids
+
+
+def kickstart_fairplayd(device: SSHDevice) -> None:
+    listing = device.run("launchctl list").decode("utf-8", "replace")
+    labels = []
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and "fairplayd" in fields[-1].lower():
+            labels.append(fields[-1])
+    for label in labels:
+        quoted = shlex.quote(label)
+        try:
+            device.run("launchctl kickstart -k system/" + quoted)
+        except RuntimeError:
+            try:
+                device.run("launchctl kickstart -k " + quoted)
+            except RuntimeError:
+                continue
+
+
+def fairplayd_pid(device: SSHDevice) -> int:
+    listing = process_listing(device)
+    pids = fairplayd_pids(listing)
+    if not pids:
+        kickstart_fairplayd(device)
+        listing = process_listing(device)
+        pids = fairplayd_pids(listing)
     if len(pids) != 1:
-        raise RuntimeError(f"expected one fairplayd process; found {len(pids)}")
+        raise RuntimeError(f"expected one fairplayd process; found {len(pids)}. Open an App Store app on the device and retry")
     return pids[0]
 
 
@@ -190,11 +227,15 @@ def restart_fairplayd(device: SSHDevice) -> int:
 
 
 def remote_pids(device: SSHDevice, executable: str) -> list[int]:
-    listing = device.run("ps -e -o pid,comm").decode("utf-8", "replace")
+    listing = process_listing(device)
+    base = Path(executable).name
     result = []
     for line in listing.splitlines():
-        fields = line.strip().split(None, 1)
-        if len(fields) == 2 and fields[0].isdigit() and fields[1] == executable:
+        fields = line.split()
+        if len(fields) < 2 or not fields[0].isdigit():
+            continue
+        command = " ".join(fields[1:])
+        if executable in command.split() or command.endswith(executable) or Path(command.split()[-1]).name == base:
             result.append(int(fields[0]))
     return result
 
@@ -206,23 +247,23 @@ def stop_remote(device: SSHDevice, executable: str) -> None:
 
 def observe_uid_layer(device: SSHDevice, program: str, pid: int, output: str, trigger_program: str, executable: str) -> None:
     command = " ".join(map(shlex.quote, (program, "observe-uid-layer", str(pid), output, "90")))
-    observer = subprocess.Popen(device.command + [command], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    observer = device.spawn(command)
     trigger_process = None
     direct_process = None
     try:
-        if not select.select([observer.stderr], [], [], 15)[0]:
+        ready = observer.readline_stderr(15)
+        if not ready:
             raise RuntimeError("FairPlay observer did not become ready")
-        ready = observer.stderr.readline()
         if b"observing selector 21" not in ready:
             raise RuntimeError("FairPlay observer failed: " + ready.decode("utf-8", "replace"))
         trigger_command = " ".join(map(shlex.quote, (trigger_program, executable)))
-        trigger_process = subprocess.Popen(device.command + [trigger_command], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        trigger_process = device.spawn(trigger_command)
         trigger_output, trigger_errors = trigger_process.communicate(timeout=15)
         if trigger_process.returncode:
             failure = trigger_output + trigger_errors
             if trigger_process.returncode != 3:
                 raise RuntimeError("FairPlay trigger failed: " + failure.decode("utf-8", "replace"))
-            direct_process = subprocess.Popen(device.command + [shlex.quote(executable)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            direct_process = device.spawn(shlex.quote(executable))
         output_bytes, errors = observer.communicate(timeout=100)
         if observer.returncode:
             raise RuntimeError("FairPlay observation failed: " + (output_bytes + errors).decode("utf-8", "replace"))
@@ -251,14 +292,18 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, help="new directory for credential.bin")
     parser.add_argument("--device-udid", help="connected device UDID")
     parser.add_argument("--ssh-port", type=int, default=2222, help="local USB SSH port (default: 2222)")
+    parser.add_argument("--ssh-password", nargs="?", const="", help="SSH password for root; omit the value to prompt")
     args = parser.parse_args()
     if args.sinf_member and not args.ipa:
         parser.error("--sinf-member requires --ipa")
     if not args.output_dir or args.output_dir.exists():
         parser.error("--output-dir must name a new directory")
+    password = args.ssh_password
+    if password == "":
+        password = getpass.getpass("SSH password: ")
     sinf = license_sinf(args.sinf, args.ipa, args.sinf_member) if args.sinf or args.ipa else None
     udid = normalize_udid(args.device_udid) if args.device_udid else connected_udid()
-    device = SSHDevice(args.ssh_port, udid)
+    device = SSHDevice(args.ssh_port, udid, password=password)
     try:
         for name in DEVICE_FILES:
             device.write(name, args.bundle / name, executable=name.endswith(".ios"))

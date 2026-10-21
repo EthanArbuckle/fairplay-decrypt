@@ -8,13 +8,16 @@ Tested on iOS 14 and iOS 18.
 
 ## Retrieve
 
-Connect one paired, jailbroken device with root SSH key access. Install at
+Connect one paired, jailbroken device with root SSH access. Install at
 least one App Store app on that device. From the project root:
 
 ```sh
 make
 uv run python credential-retrieval/retrieve.py --output-dir /path/to/new-output-directory
 ```
+
+SSH key login is the default. Password login is also supported: pass
+`--ssh-password` with the value, or `--ssh-password` alone to prompt.
 
 The retriever uses the first installed app with a supported license. To
 select a particular account, pass `--ipa /path/to/app.ipa` or
