@@ -11,6 +11,23 @@ Supports version-3 and version-5 SUPF, 448-byte and 440-byte SINF `priv`
 records, and encrypted arm64 Mach-O slices. A 440-byte record must end in
 eight zero bytes.
 
+## Prebuilt executables
+
+[Releases](../../releases) provide single-file executables that need no
+Python install:
+
+- `fairplay-decrypt-{linux-x86_64,linux-arm64,macos-arm64}`: the decryptor.
+- `fairplay-credential-macos-arm64`: credential retrieval, with the device
+  bundle built in.
+
+```sh
+chmod +x fairplay-decrypt-macos-arm64
+xattr -d com.apple.quarantine fairplay-decrypt-macos-arm64  # macOS only
+./fairplay-decrypt-macos-arm64 encrypted.ipa decrypted.ipa --credential credential.bin
+```
+
+To build them locally, install `pyinstaller` and run `make dist`.
+
 ## Set up
 
 From this directory, with Python 3.9+ and a C compiler:
