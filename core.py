@@ -130,20 +130,10 @@ def _sinf_field(sinf: bytes, wanted: bytes) -> bytes:
     return sinf[fields[0][1] : fields[0][2]]
 
 
-def _atom(sinf: bytes, name: bytes) -> bytes:
-    tag = sinf.find(name)
-    if tag < 4:
-        raise ValueError(f"missing {name!r} atom")
-    size = int.from_bytes(sinf[tag - 4 : tag], "big")
-    if size < 8 or tag - 4 + size > len(sinf):
-        raise ValueError(f"invalid {name!r} atom size")
-    return sinf[tag + 4 : tag - 4 + size]
-
-
 def derive_work16(credential: bytes, sinf: bytes) -> bytes:
     name = _sinf_field(sinf, b"name").split(b"\0", 1)[0]
     iviv = _sinf_field(sinf, b"iviv")
-    raw_priv = _atom(sinf, b"priv")
+    raw_priv = _sinf_field(sinf, b"priv")
     if len(raw_priv) not in (440, 448):
         raise ValueError("unsupported SINF priv-record length")
     if len(raw_priv) == 440:
