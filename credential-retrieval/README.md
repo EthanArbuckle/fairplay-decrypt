@@ -4,7 +4,7 @@ Retrieve a reusable 16-byte FairPlay account credential from a jailbroken
 device. The host needs Python, `idevice_id`, `iproxy`, and USB SSH. The device
 runs native programs only; it does not need Python or Frida.
 
-Tested on iOS 14, iOS 15 and iOS 18.
+Tested on iOS 14, iOS 15, iOS 16.6 (iPhone X, Dopamine with RootHide) and iOS 18.
 
 ## Retrieve
 
@@ -25,3 +25,11 @@ The output directory must not exist; it receives `credential.bin` for use
 with `decrypt.py --credential`.
 
 Build on a Mac with Xcode and `ldid`.
+
+## RootHide
+
+RootHide-based jailbreaks are detected automatically through `jbroot`; no
+additional options are needed. The retriever resolves its temporary directories
+to physical paths so the bootstrap shell and native programs access the same
+files. Process enumeration uses `/rootfs/bin/ps`, which is outside the
+bootstrap's virtual filesystem.

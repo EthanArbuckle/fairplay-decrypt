@@ -141,7 +141,7 @@ def trigger_app(device: SSHDevice, license_bytes: bytes | None) -> tuple[str, st
 
 
 def fairplayd_pid(device: SSHDevice) -> int:
-    listing = device.run("ps -e -o pid,comm").decode("utf-8", "replace")
+    listing = device.processes().decode("utf-8", "replace")
     pids = []
     for line in listing.splitlines():
         fields = line.strip().split(None, 1)
@@ -168,7 +168,7 @@ def restart_fairplayd(device: SSHDevice) -> int:
 
 
 def remote_pids(device: SSHDevice, executable: str) -> list[int]:
-    listing = device.run("ps -e -o pid,comm").decode("utf-8", "replace")
+    listing = device.processes().decode("utf-8", "replace")
     result = []
     for line in listing.splitlines():
         fields = line.strip().split(None, 1)

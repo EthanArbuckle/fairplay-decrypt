@@ -34,8 +34,15 @@ class SSHDevice:
             else:
                 raise RuntimeError("USB SSH tunnel did not open")
         self.command = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8", "-p", str(port), "root@127.0.0.1"]
-        self.directory = "/var/tmp/fp-retrieve-" + secrets.token_hex(8)
-        self.trigger_directory = "/var/tmp/fp-trigger-" + secrets.token_hex(8)
+        temporary = self.run("if command -v jbroot >/dev/null 2>&1; then jbroot /var/tmp; fi").decode("utf-8").strip()
+        self.ps = "/rootfs/bin/ps" if temporary else "ps"
+        if temporary and not temporary.startswith("/"):
+            self.close()
+            raise RuntimeError("jbroot returned a non-absolute temporary directory")
+        # Native programs do not use the bootstrap shell's virtual filesystem.
+        temporary = temporary or "/var/tmp"
+        self.directory = temporary + "/fp-retrieve-" + secrets.token_hex(8)
+        self.trigger_directory = temporary + "/fp-trigger-" + secrets.token_hex(8)
         self.run("umask 077; mkdir " + shlex.quote(self.directory))
         self.run("mkdir -m 755 " + shlex.quote(self.trigger_directory))
 
@@ -45,6 +52,9 @@ class SSHDevice:
             message = (result.stdout + result.stderr).decode("utf-8", "replace")
             raise RuntimeError(f"device command failed ({result.returncode}): {message}")
         return result.stdout
+
+    def processes(self) -> bytes:
+        return self.run(shlex.quote(self.ps) + " -e -o pid,comm")
 
     def path(self, name: str) -> str:
         if not re.fullmatch(r"[a-zA-Z0-9_.-]+", name):
