@@ -1,0 +1,77 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Older runners: binaries run on older glibc, and macos-latest queues for hours.
+          - name: linux-x86_64
+            runner: ubuntu-22.04
+          - name: linux-arm64
+            runner: ubuntu-22.04-arm
+          - name: macos-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Install ldid
+        if: runner.os == 'macOS'
+        run: brew install ldid
+
+      - name: Build
+        run: make dist
+
+      - name: Smoke test
+        run: |
+          ./dist/fairplay-decrypt --help
+          if [ "$RUNNER_OS" = macOS ]; then ./dist/fairplay-credential --help; fi
+
+      - name: Rename
+        run: |
+          mkdir release
+          for exe in dist/*; do
+            cp "$exe" "release/$(basename "$exe")-${{ matrix.name }}"
+          done
+          ls -l release
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: fairplay-decrypt-${{ matrix.name }}
+          path: release/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: release
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

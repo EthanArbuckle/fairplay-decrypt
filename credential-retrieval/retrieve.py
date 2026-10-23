@@ -11,13 +11,16 @@ import re
 import select
 import shlex
 import subprocess
+import sys
+import tarfile
 import time
 from zipfile import ZipFile
 
 from native_ssh import SSHDevice
 
 ROOT = Path(__file__).resolve().parent
-BUNDLE = ROOT / "build" / "bundle"
+FROZEN = getattr(sys, "frozen", False)
+BUNDLE = Path(sys._MEIPASS) / "bundle" if FROZEN else ROOT / "build" / "bundle"
 DEVICE_FILES = ("credential.ios", "driver.ios", "trigger.ios", "static-key-table.bin", "core4-word-table.bin")
 MAX_SINF_BYTES = 1 << 20
 
@@ -242,6 +245,10 @@ def main() -> None:
     parser.add_argument("--device-udid", help="connected device UDID")
     parser.add_argument("--ssh-port", type=int, default=2222, help="local USB SSH port (default: 2222)")
     args = parser.parse_args()
+    if FROZEN and args.bundle == BUNDLE and not BUNDLE.exists():
+        # Stored as a tar so the packager leaves the signed device binaries untouched.
+        with tarfile.open(BUNDLE.with_suffix(".tar")) as archive:
+            archive.extractall(BUNDLE, filter="data")
     if args.sinf_member and not args.ipa:
         parser.error("--sinf-member requires --ipa")
     if not args.output_dir or args.output_dir.exists():

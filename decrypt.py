@@ -6,12 +6,15 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import sys
 import tempfile
 from zipfile import ZipFile
 
 from core import BlockTransform, arm64_encryption_info, decrypt_binary
 
-ROOT = Path(__file__).resolve().parent
+FROZEN = getattr(sys, "frozen", False)
+ROOT = Path(sys.executable).parent if FROZEN else Path(__file__).resolve().parent
+RESOURCES = Path(sys._MEIPASS) if FROZEN else ROOT
 
 
 def supf_paths(names: set[str]) -> list[str]:
@@ -72,7 +75,7 @@ def main() -> None:
     if len(credential) != 16:
         parser.error("credential must contain exactly 16 bytes")
     with BlockTransform(
-        ROOT / "transform", ROOT / "transform_const_data.bin"
+        RESOURCES / "transform", RESOURCES / "transform_const_data.bin"
     ) as transform, ZipFile(args.ipa) as archive:
         members = archive.namelist()
         names = set(members)
