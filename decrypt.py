@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 from pathlib import Path
+import shutil
 import tempfile
 from zipfile import ZipFile
 
 from core import arm64_encryption_info, decrypt_binary
 
 ROOT = Path(__file__).resolve().parent
+COPY_BUFSIZE = 64 * 1024
 
 
 def supf_paths(names: set[str]) -> list[str]:
@@ -125,6 +128,8 @@ def main() -> None:
             replacements[binary_path] = result
             total_pages += pages
             print(f"{ordinal:02d}/{len(plan)} pages={pages} {binary_path}", flush=True)
+        plan.clear()
+        source = None
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
             prefix="fairplay-linux-output-", dir=args.output.parent
@@ -132,12 +137,22 @@ def main() -> None:
             provisional = Path(temp) / "provisional.ipa"
             with ZipFile(provisional, "w") as output:
                 for entry in archive.infolist():
-                    data = (
-                        replacements[entry.filename]
-                        if entry.filename in replacements
-                        else archive.read(entry.filename)
-                    )
-                    output.writestr(entry, data)
+                    info = copy.copy(entry)
+                    if entry.filename in replacements:
+                        data = replacements[entry.filename]
+                        info.file_size = len(data)
+                        with output.open(info, "w") as destination:
+                            view = memoryview(data)
+                            for offset in range(0, len(view), COPY_BUFSIZE):
+                                destination.write(
+                                    view[offset : offset + COPY_BUFSIZE]
+                                )
+                    else:
+                        with archive.open(entry, "r") as member:
+                            with output.open(info, "w") as destination:
+                                shutil.copyfileobj(
+                                    member, destination, length=COPY_BUFSIZE
+                                )
             os.link(provisional, args.output)
     print(f"decrypted-binaries={len(replacements)} pages={total_pages} output={args.output}")
 
