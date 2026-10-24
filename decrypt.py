@@ -52,6 +52,14 @@ def enclosing_app_sinf(names: set[str], bundle: str) -> str | None:
     return None
 
 
+def is_store_metadata(name: str) -> bool:
+    return (
+        name == "iTunesMetadata.plist"
+        or name.startswith("iTunesArtwork")
+        or name.startswith("META-INF/com.apple.")
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ipa", type=Path, help="authorized encrypted IPA")
@@ -63,6 +71,11 @@ def main() -> None:
         type=Path,
         default=ROOT / "credential.bin",
         help="saved 16-byte credential",
+    )
+    parser.add_argument(
+        "--keep-metadata",
+        action="store_true",
+        help="keep iTunesMetadata.plist, iTunesArtwork, and META-INF/com.apple.* in output (stripped by default)",
     )
     args = parser.parse_args()
     if not args.ipa.is_file() or not args.credential.is_file():
@@ -136,6 +149,8 @@ def main() -> None:
             provisional = Path(temp) / "provisional.ipa"
             with ZipFile(provisional, "w") as output:
                 for entry in archive.infolist():
+                    if not args.keep_metadata and is_store_metadata(entry.filename):
+                        continue
                     info = copy.copy(entry)
                     if entry.filename in replacements:
                         data = replacements[entry.filename]
