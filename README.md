@@ -13,17 +13,16 @@ eight zero bytes.
 
 ## Set up
 
-From this directory, with Python 3.9+ and a C compiler:
+From this directory, with Python 3.9+:
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
-make
 ```
 
-On macOS, `make` also builds the credential-retrieval bundle and requires
-Xcode and `ldid`. On Linux, it builds the decryptor.
+The decryptor is pure Python. On macOS, `make` builds the
+credential-retrieval bundle and requires Xcode and `ldid`.
 
 ## Decrypt
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 from zipfile import ZipFile
 
-from core import BlockTransform, arm64_encryption_info, decrypt_binary
+from core import arm64_encryption_info, decrypt_binary
 
 ROOT = Path(__file__).resolve().parent
 
@@ -71,9 +71,7 @@ def main() -> None:
     credential = args.credential.read_bytes()
     if len(credential) != 16:
         parser.error("credential must contain exactly 16 bytes")
-    with BlockTransform(
-        ROOT / "transform", ROOT / "transform_const_data.bin"
-    ) as transform, ZipFile(args.ipa) as archive:
+    with ZipFile(args.ipa) as archive:
         members = archive.namelist()
         names = set(members)
         if len(names) != len(members):
@@ -123,7 +121,7 @@ def main() -> None:
         replacements = {}
         total_pages = 0
         for ordinal, (binary_path, source, sinf, supf) in enumerate(plan, 1):
-            result, pages = decrypt_binary(source, sinf, supf, credential, transform)
+            result, pages = decrypt_binary(source, sinf, supf, credential)
             replacements[binary_path] = result
             total_pages += pages
             print(f"{ordinal:02d}/{len(plan)} pages={pages} {binary_path}", flush=True)
