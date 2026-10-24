@@ -23,4 +23,14 @@ required. If an IPA has distinct license selectors, specify one with
 The output directory must not exist; it receives `credential.bin` for use
 with `decrypt.py --credential`.
 
+Sometimes the script has issues starting the iproxy tunnel. You can launch it
+yourself in another terminal window.
+
+For password auth, pass `--ssh-user` and `--ssh-password`. This needs `sshpass`
+in `PATH`. This is useful for those on rootless jailbreaks like Dopamine.
+
+```sh
+python3 credential-retrieval/retrieve.py --ssh-user mobile --ssh-password alpine --output-dir /path/to/new-output-directory
+```
+
 Build on a Mac with Xcode and `ldid`.
