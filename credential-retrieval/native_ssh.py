@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import atexit
-from pathlib import Path
 import re
 import secrets
 import shlex
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 
 class SSHDevice:
@@ -21,7 +21,11 @@ class SSHDevice:
             with socket.create_connection(("127.0.0.1", port), timeout=1):
                 pass
         except OSError:
-            self.tunnel = subprocess.Popen(["iproxy", "-u", udid, f"{port}:22"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.tunnel = subprocess.Popen(
+                ["iproxy", "-u", udid, f"{port}:22"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             atexit.register(self.close)
             for _ in range(30):
                 if self.tunnel.poll() is not None:
@@ -33,8 +37,23 @@ class SSHDevice:
                     time.sleep(0.1)
             else:
                 raise RuntimeError("USB SSH tunnel did not open")
-        self.command = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8", "-p", str(port), "root@127.0.0.1"]
-        temporary = self.run("if command -v jbroot >/dev/null 2>&1; then jbroot /var/tmp; fi").decode("utf-8").strip()
+        self.command = [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=8",
+            "-p",
+            str(port),
+            "root@127.0.0.1",
+        ]
+        temporary = (
+            self.run("if command -v jbroot >/dev/null 2>&1; then jbroot /var/tmp; fi")
+            .decode("utf-8")
+            .strip()
+        )
         self.ps = "/rootfs/bin/ps" if temporary else "ps"
         if temporary and not temporary.startswith("/"):
             self.close()
@@ -47,10 +66,18 @@ class SSHDevice:
         self.run("mkdir -m 755 " + shlex.quote(self.trigger_directory))
 
     def run(self, command: str, data: bytes | None = None) -> bytes:
-        result = subprocess.run(self.command + [command], input=data, capture_output=True, timeout=120)
+        result = subprocess.run(
+            self.command + [command],
+            input=data,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
         if result.returncode:
             message = (result.stdout + result.stderr).decode("utf-8", "replace")
-            raise RuntimeError(f"device command failed ({result.returncode}): {message}")
+            raise RuntimeError(
+                f"device command failed ({result.returncode}): {message}"
+            )
         return result.stdout
 
     def processes(self) -> bytes:
@@ -74,7 +101,12 @@ class SSHDevice:
 
     def cleanup(self) -> None:
         try:
-            self.run("rm -r -- " + shlex.quote(self.directory) + " " + shlex.quote(self.trigger_directory))
+            self.run(
+                "rm -r -- "
+                + shlex.quote(self.directory)
+                + " "
+                + shlex.quote(self.trigger_directory)
+            )
         finally:
             self.close()
 

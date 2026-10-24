@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import copy
 import os
-from pathlib import Path
 import shutil
 import tempfile
+from pathlib import Path
 from zipfile import ZipFile
 
 from core import arm64_encryption_info, decrypt_binary
@@ -128,11 +128,10 @@ def main() -> None:
             replacements[binary_path] = result
             total_pages += pages
             print(f"{ordinal:02d}/{len(plan)} pages={pages} {binary_path}", flush=True)
-        plan.clear()
-        source = None
+        del plan, source
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
-            prefix="fairplay-linux-output-", dir=args.output.parent
+            prefix="fairplay-output-", dir=args.output.parent
         ) as temp:
             provisional = Path(temp) / "provisional.ipa"
             with ZipFile(provisional, "w") as output:
@@ -144,17 +143,17 @@ def main() -> None:
                         with output.open(info, "w") as destination:
                             view = memoryview(data)
                             for offset in range(0, len(view), COPY_BUFSIZE):
-                                destination.write(
-                                    view[offset : offset + COPY_BUFSIZE]
-                                )
+                                destination.write(view[offset : offset + COPY_BUFSIZE])
                     else:
-                        with archive.open(entry, "r") as member:
-                            with output.open(info, "w") as destination:
-                                shutil.copyfileobj(
-                                    member, destination, length=COPY_BUFSIZE
-                                )
+                        with (
+                            archive.open(entry, "r") as member,
+                            output.open(info, "w") as destination,
+                        ):
+                            shutil.copyfileobj(member, destination, length=COPY_BUFSIZE)
             os.link(provisional, args.output)
-    print(f"decrypted-binaries={len(replacements)} pages={total_pages} output={args.output}")
+    print(
+        f"decrypted-binaries={len(replacements)} pages={total_pages} output={args.output}"
+    )
 
 
 if __name__ == "__main__":

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import struct
+from collections.abc import Iterator
+from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -108,7 +109,7 @@ def arm64_encryption_info(data: bytes) -> MachoInfo:
     return MachoInfo(base, cryptoff, cryptsize, cryptid_offset)
 
 
-def _children(data: bytes, start: int, end: int):
+def _children(data: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
     offset = start
     while offset < end:
         if offset + 8 > end:
@@ -154,7 +155,11 @@ def derive_work16(credential: bytes, sinf: bytes) -> bytes:
 
 
 def arm64_supf_record_offset(supf: bytes, required_pages: int) -> int:
-    if len(supf) < 12 or supf[0] not in (3, 5) or supf[1:4] not in (b"507", b"510", b"612"):
+    if (
+        len(supf) < 12
+        or supf[0] not in (3, 5)
+        or supf[1:4] not in (b"507", b"510", b"612")
+    ):
         raise ValueError("unsupported SUPF format")
     header_size = 32 if supf[0] == 3 else 12
     count = struct.unpack_from(">I", supf, 8)[0]
@@ -214,9 +219,9 @@ def finish(state: bytes) -> bytes:
     row = initial
     for selectors in ROUND_SELECTORS:
         row = _mix_round(row, selectors)
-    final = []
-    for j, selectors in enumerate(FINAL_SELECTORS):
-        decoded = [row[i] ^ 0x18FB for i in selectors]
+    final: list[int] = []
+    for j, indices in enumerate(FINAL_SELECTORS):
+        decoded = [row[i] ^ 0x18FB for i in indices]
         left = decoded[0] | decoded[1] << 16
         right = decoded[2] | decoded[3] << 16
         x9 = ((left + right) & MASK32) ** 2 & MASK64
@@ -226,9 +231,7 @@ def finish(state: bytes) -> bytes:
         low = (x9 ^ 0xB4E4) & 0xFFFF
         high = ((x9 >> 16) ^ 0x4F3D ^ 0x18FB) & 0xFFFF
         final.extend((low, high))
-    return b"".join(
-        (a ^ b).to_bytes(2, "big") for a, b in zip(initial, final)
-    )
+    return b"".join((a ^ b).to_bytes(2, "big") for a, b in zip(initial, final))
 
 
 def block_transform(source: bytes, work: bytes) -> bytes:
