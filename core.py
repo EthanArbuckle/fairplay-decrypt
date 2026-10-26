@@ -13,7 +13,6 @@ ARM64 = 0x0100000C
 MASK32 = 0xFFFFFFFF
 MASK64 = 0xFFFFFFFFFFFFFFFF
 PAGE_SIZE = 4096
-WORK_MASK = bytes.fromhex("c7626110cecd15963d850f6605f11c4b")
 CONSTANT = bytes.fromhex("b4f27cb84eaaff3c1309be4089f02972")
 ROUND_SELECTORS = tuple(
     bytes.fromhex(value)
@@ -150,7 +149,7 @@ def derive_work16(credential: bytes, sinf: bytes) -> bytes:
     clear = op.update(raw_priv) + op.finalize()
     if clear[:4] != b"itun" or clear[20:24] != b"key " or clear[44:48] != b"iviv":
         raise ValueError("credential does not decode this SINF priv record")
-    return _xor(clear[24:40], WORK_MASK)
+    return clear[24:40]
 
 
 def arm64_supf_record_offset(supf: bytes, required_pages: int) -> int:
@@ -228,10 +227,10 @@ def finish(state: bytes) -> bytes:
 
 
 def block_transform(source: bytes, work: bytes) -> bytes:
-    """AES-128-ECB encrypt of ``source ^ CONSTANT`` under ``work ^ WORK_MASK``."""
+    """AES-128-ECB encrypt of ``source ^ CONSTANT`` under ``work``."""
     if len(source) != 16 or len(work) != 16:
         raise ValueError("block-transform inputs require 16 bytes")
-    op = Cipher(algorithms.AES(_xor(work, WORK_MASK)), modes.ECB()).encryptor()
+    op = Cipher(algorithms.AES(work), modes.ECB()).encryptor()
     return op.update(_xor(source, CONSTANT)) + op.finalize()
 
 
