@@ -4,33 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 ARM64 = 0x0100000C
 MASK32 = 0xFFFFFFFF
-MASK64 = 0xFFFFFFFFFFFFFFFF
 PAGE_SIZE = 4096
-ROUND_SELECTORS = tuple(
-    bytes.fromhex(value)
-    for value in (
-        "363738393a3b3c3d",
-        "383736393a3d3c3b",
-        "38363a373c393d3b",
-        "37383a363d393b3c",
-    )
+ROUND_SELECTORS = (
+    ((0, 1), (2, 3), (4, 5), (6, 7)),
+    ((2, 1), (0, 3), (4, 7), (6, 5)),
+    ((2, 0), (4, 1), (6, 3), (7, 5)),
+    ((1, 2), (4, 0), (7, 3), (5, 6)),
 )
-ROUND_CONSTANTS = (0x6EE6B74F, 0x78B72ABF, 0xD227C8EA, 0x0C0081BC)
+ROUND_CONSTANTS = (0x68547C2E, 0x7E05E1DE, 0xD495038B, 0x0AB24ADD)
 FINAL_SELECTORS = ((0, 1, 2, 3), (0, 2, 4, 6), (0, 3, 5, 7), (4, 5, 6, 7))
-_FINAL_CONSTANTS = (
-    0x4F3DAC1FD3361949,
-    0x4F3DAC1F631A63A2,
-    0x4F3DAC1F87CD2974,
-    0x4F3DAC1F7EA63AB1,
-)
-
+FINAL_CONSTANTS = (0x5B7198C7, 0xEB5DE22C, 0x0F8AA8FA, 0xF6E1BB3F)
 
 @dataclass(frozen=True)
 class MachoInfo:
@@ -44,6 +34,10 @@ def _xor(a: bytes, b: bytes) -> bytes:
     if len(a) != len(b):
         raise ValueError("XOR inputs must have equal lengths")
     return bytes(x ^ y for x, y in zip(a, b))
+
+
+def _xor_int(lhs: Sequence[int], rhs: Sequence[int]) -> Sequence[int]:
+    return [x ^ y for x, y in zip(lhs, rhs)]
 
 
 def arm64_encryption_info(data: bytes) -> MachoInfo:
@@ -188,41 +182,29 @@ def source_blocks(wrapped: bytes, absolute_index: int) -> tuple[bytes, bytes, by
     return first, second, third
 
 
-def _mix_round(before: list[int], selectors: bytes) -> list[int]:
-    out = []
-    for pair in range(4):
-        a = before[selectors[pair * 2] - 0x36] ^ 0x18FB
-        b = before[selectors[pair * 2 + 1] - 0x36] ^ 0x18FB
-        mixed = a + b
-        square = (mixed * mixed ^ ROUND_CONSTANTS[pair]) & MASK32
-        low = ((0xCB61 - ((mixed >> 16) & 0xFFFF) ** 2) ^ square) & 0xFFFF
-        out.append(low ^ 0x18FB)
-        out.append((square >> 16) ^ 0x1E49)
-    return out
-
-
-def finish(state: bytes) -> bytes:
-    if len(state) != 16:
-        raise ValueError("finishing permutation requires 16 bytes")
-    initial = [
-        int.from_bytes(state[i : i + 2], "big") ^ 0x18FB for i in range(0, 16, 2)
-    ]
-    row = initial
+def finish(state: Sequence[int]) -> Sequence[int]:
+    # 16-bit
+    src = state
     for selectors in ROUND_SELECTORS:
-        row = _mix_round(row, selectors)
-    final: list[int] = []
-    for j, indices in enumerate(FINAL_SELECTORS):
-        decoded = [row[i] ^ 0x18FB for i in indices]
-        left = decoded[0] | decoded[1] << 16
-        right = decoded[2] | decoded[3] << 16
-        x9 = ((left + right) & MASK32) ** 2 & MASK64
-        x9 ^= 0x4F3DAC1F8847818E
-        x19 = _FINAL_CONSTANTS[j] ^ x9
-        x9 = x19 ^ (x9 >> 32)
-        low = (x9 ^ 0xB4E4) & 0xFFFF
-        high = ((x9 >> 16) ^ 0x4F3D ^ 0x18FB) & 0xFFFF
-        final.extend((low, high))
-    return b"".join((a ^ b).to_bytes(2, "big") for a, b in zip(initial, final))
+        dst = []
+        for pair, constant in zip(selectors, ROUND_CONSTANTS):
+            mixed = src[pair[0]] + src[pair[1]]  # carry bit kept
+            square = mixed * mixed
+            x = (square & MASK32) ^ (mixed >> 16) ^ constant
+            dst.extend((x & 0xFFFF, x >> 16))
+        src = dst
+
+    # 32-bit
+    dst = []
+    for quartet, constant in zip(FINAL_SELECTORS, FINAL_CONSTANTS):
+        a = (src[quartet[1]] << 16) | src[quartet[0]]
+        b = (src[quartet[3]] << 16) | src[quartet[2]]
+        mixed = (a + b) & MASK32  # carry bit dropped
+        square = mixed * mixed
+        x = (square & MASK32) ^ (square >> 32) ^ constant
+        dst.extend((x & 0xFFFF, x >> 16))
+
+    return _xor_int(state, dst)
 
 
 def block_transform(source: bytes, work: bytes) -> bytes:
@@ -234,8 +216,8 @@ def block_transform(source: bytes, work: bytes) -> bytes:
 
 
 def derive_page_key(wrapped: bytes, absolute_index: int, work: bytes) -> bytes:
-    a, b, c = (block_transform(s, work) for s in source_blocks(wrapped, absolute_index))
-    return finish(_xor(finish(_xor(finish(a), b)), c))
+    a, b, c = (struct.unpack(">8H", block_transform(s, work)) for s in source_blocks(wrapped, absolute_index))
+    return struct.pack(">8H", *finish(_xor_int(finish(_xor_int(finish(a), b)), c)))
 
 
 def decrypt_binary(
