@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from zipfile import ZipFile
 
-from core import arm64_encryption_info, decrypt_binary
+from core import arm64_encryption_infos, decrypt_binary
 
 ROOT = Path(__file__).resolve().parent
 COPY_BUFSIZE = 64 * 1024
@@ -101,7 +101,7 @@ def main() -> None:
                 raise ValueError(f"SUPF lacks binary/SINF: {supf_path}")
             source = archive.read(binary_path)
             try:
-                arm64_encryption_info(source)
+                arm64_encryption_infos(source)
             except ValueError as error:
                 if str(error).startswith("unsupported cryptid/size: 0,"):
                     continue
