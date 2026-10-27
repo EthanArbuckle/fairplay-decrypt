@@ -57,6 +57,7 @@ def is_store_metadata(name: str) -> bool:
         name == "iTunesMetadata.plist"
         or name.startswith("iTunesArtwork")
         or name.startswith("META-INF/com.apple.")
+        or "/SC_Info/" in name
     )
 
 
@@ -75,7 +76,7 @@ def main() -> None:
     parser.add_argument(
         "--keep-metadata",
         action="store_true",
-        help="keep iTunesMetadata.plist, iTunesArtwork, and META-INF/com.apple.* in output (stripped by default)",
+        help="keep iTunesMetadata.plist, iTunesArtwork, META-INF/com.apple.*, and SC_Info/ in output (stripped by default)",
     )
     args = parser.parse_args()
     if not args.ipa.is_file() or not args.credential.is_file():
