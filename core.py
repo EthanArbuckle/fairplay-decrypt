@@ -13,7 +13,6 @@ ARM64 = 0x0100000C
 MASK32 = 0xFFFFFFFF
 MASK64 = 0xFFFFFFFFFFFFFFFF
 PAGE_SIZE = 4096
-CONSTANT = bytes.fromhex("b4f27cb84eaaff3c1309be4089f02972")
 ROUND_SELECTORS = tuple(
     bytes.fromhex(value)
     for value in (
@@ -183,9 +182,9 @@ def source_blocks(wrapped: bytes, absolute_index: int) -> tuple[bytes, bytes, by
     if len(wrapped) != 16 or not 0 <= absolute_index < 1 << 32:
         raise ValueError("invalid wrapped record or page index")
     page_offset = (absolute_index << 12).to_bytes(8, "big")
-    first = _xor(wrapped[8:16], CONSTANT[:8]) + _xor(CONSTANT[8:], page_offset)
-    second = _xor(wrapped, CONSTANT)
-    third = _xor(CONSTANT[:8], page_offset) + _xor(wrapped[:8], CONSTANT[8:])
+    first = wrapped[8:16] + page_offset
+    second = wrapped
+    third = page_offset + wrapped[:8]
     return first, second, third
 
 
@@ -227,11 +226,11 @@ def finish(state: bytes) -> bytes:
 
 
 def block_transform(source: bytes, work: bytes) -> bytes:
-    """AES-128-ECB encrypt of ``source ^ CONSTANT`` under ``work``."""
+    """AES-128-ECB encrypt of ``source`` block under ``work``."""
     if len(source) != 16 or len(work) != 16:
         raise ValueError("block-transform inputs require 16 bytes")
     op = Cipher(algorithms.AES(work), modes.ECB()).encryptor()
-    return op.update(_xor(source, CONSTANT)) + op.finalize()
+    return op.update(source) + op.finalize()
 
 
 def derive_page_key(wrapped: bytes, absolute_index: int, work: bytes) -> bytes:
