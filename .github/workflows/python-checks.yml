@@ -1,0 +1,27 @@
+name: Python checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.10"
+      - name: Lint
+        run: |
+          if make lint; then
+            exit 0
+          fi
+          echo "::error title=Python checks failed::Run 'make format' for automatic fixes, then 'make lint'. Fix remaining type errors manually."
+          printf '%s\n' 'Run `make format` for automatic fixes, then `make lint`. Fix remaining type errors manually.' >> "$GITHUB_STEP_SUMMARY"
+          exit 1
