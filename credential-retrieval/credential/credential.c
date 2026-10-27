@@ -936,7 +936,7 @@ static int fairplay_selector(uint32_t *selector) {
         return -1;
     }
 
-    *selector = major <= 18 ? 9 : 21;
+    *selector = major <= 19 ? 9 : 21;
     return 0;
 }
 
