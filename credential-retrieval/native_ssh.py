@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import atexit
+import os
 import re
 import secrets
 import shlex
+import shutil
 import socket
 import subprocess
 import time
@@ -13,7 +15,9 @@ from pathlib import Path
 
 
 class SSHDevice:
-    def __init__(self, port: int, udid: str):
+    def __init__(
+        self, port: int, udid: str, user: str = "root", password: str | None = None
+    ):
         if not 1 <= port <= 65535:
             raise ValueError("SSH port is out of range")
         self.tunnel = None
@@ -37,18 +41,25 @@ class SSHDevice:
                     time.sleep(0.1)
             else:
                 raise RuntimeError("USB SSH tunnel did not open")
+        auth = ["-o", "BatchMode=yes"] if password is None else []
         self.command = [
             "ssh",
-            "-o",
-            "BatchMode=yes",
+            *auth,
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
             "ConnectTimeout=8",
             "-p",
             str(port),
-            "root@127.0.0.1",
+            f"{user}@127.0.0.1",
         ]
+        self.env = None
+        if password is not None:
+            if shutil.which("sshpass") is None:
+                self.close()
+                raise RuntimeError("password SSH needs sshpass on PATH")
+            self.command = ["sshpass", "-e", *self.command]
+            self.env = {**os.environ, "SSHPASS": password}
         temporary = (
             self.run("if command -v jbroot >/dev/null 2>&1; then jbroot /var/tmp; fi")
             .decode("utf-8")
@@ -72,6 +83,7 @@ class SSHDevice:
             capture_output=True,
             timeout=120,
             check=False,
+            env=self.env,
         )
         if result.returncode:
             message = (result.stdout + result.stderr).decode("utf-8", "replace")
@@ -79,6 +91,9 @@ class SSHDevice:
                 f"device command failed ({result.returncode}): {message}"
             )
         return result.stdout
+
+    def popen(self, command: str, **kwargs) -> subprocess.Popen:
+        return subprocess.Popen(self.command + [command], env=self.env, **kwargs)
 
     def processes(self) -> bytes:
         return self.run(shlex.quote(self.ps) + " -e -o pid,comm")
