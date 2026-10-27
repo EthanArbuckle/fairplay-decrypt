@@ -15,7 +15,6 @@ MASK64 = 0xFFFFFFFFFFFFFFFF
 PAGE_SIZE = 4096
 WORK_MASK = bytes.fromhex("c7626110cecd15963d850f6605f11c4b")
 CONSTANT = bytes.fromhex("b4f27cb84eaaff3c1309be4089f02972")
-CONTEXT_BASE = 0x3E4A45B664EBA141
 ROUND_SELECTORS = tuple(
     bytes.fromhex(value)
     for value in (
@@ -181,19 +180,13 @@ def arm64_supf_record_offset(supf: bytes, required_pages: int) -> int:
     raise ValueError("arm64 SUPF record missing")
 
 
-def _high8_from_context_word(word: int) -> bytes:
-    return (word ^ 0x2D43FBF6ED1B8833).to_bytes(8, "big")
-
-
 def source_blocks(wrapped: bytes, absolute_index: int) -> tuple[bytes, bytes, bytes]:
     if len(wrapped) != 16 or not 0 <= absolute_index < 1 << 32:
         raise ValueError("invalid wrapped record or page index")
-    context = CONTEXT_BASE ^ (absolute_index << 12)
-    first = _xor(wrapped[8:16], CONSTANT[:8]) + _high8_from_context_word(context)
+    page_offset = (absolute_index << 12).to_bytes(8, "big")
+    first = _xor(wrapped[8:16], CONSTANT[:8]) + _xor(CONSTANT[8:], page_offset)
     second = _xor(wrapped, CONSTANT)
-    third = (int.from_bytes(CONSTANT[:8], "big") ^ (absolute_index << 12)).to_bytes(
-        8, "big"
-    ) + _xor(wrapped[:8], CONSTANT[8:])
+    third = _xor(CONSTANT[:8], page_offset) + _xor(wrapped[:8], CONSTANT[8:])
     return first, second, third
 
 
