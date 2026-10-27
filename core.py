@@ -22,6 +22,7 @@ ROUND_CONSTANTS = (0x68547C2E, 0x7E05E1DE, 0xD495038B, 0x0AB24ADD)
 FINAL_SELECTORS = ((0, 1, 2, 3), (0, 2, 4, 6), (0, 3, 5, 7), (4, 5, 6, 7))
 FINAL_CONSTANTS = (0x5B7198C7, 0xEB5DE22C, 0x0F8AA8FA, 0xF6E1BB3F)
 
+
 @dataclass(frozen=True)
 class MachoInfo:
     base: int
@@ -186,7 +187,7 @@ def finish(state: Sequence[int]) -> Sequence[int]:
     # 16-bit
     src = state
     for selectors in ROUND_SELECTORS:
-        dst = []
+        dst: list[int] = []
         for pair, constant in zip(selectors, ROUND_CONSTANTS):
             mixed = src[pair[0]] + src[pair[1]]  # carry bit kept
             square = mixed * mixed
@@ -216,7 +217,10 @@ def block_transform(source: bytes, work: bytes) -> bytes:
 
 
 def derive_page_key(wrapped: bytes, absolute_index: int, work: bytes) -> bytes:
-    a, b, c = (struct.unpack(">8H", block_transform(s, work)) for s in source_blocks(wrapped, absolute_index))
+    a, b, c = (
+        struct.unpack(">8H", block_transform(s, work))
+        for s in source_blocks(wrapped, absolute_index)
+    )
     return struct.pack(">8H", *finish(_xor_int(finish(_xor_int(finish(a), b)), c)))
 
 
