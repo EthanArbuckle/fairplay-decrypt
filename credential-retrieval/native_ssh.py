@@ -39,10 +39,15 @@ class SSHDevice:
                 raise RuntimeError("USB SSH tunnel did not open")
         self.command = [
             "ssh",
+            "-q",
             "-o",
             "BatchMode=yes",
             "-o",
+            "WarnWeakCrypto=no-pq-kex",
+            "-o",
             "StrictHostKeyChecking=accept-new",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             "-o",
             "ConnectTimeout=8",
             "-p",
