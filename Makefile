@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := all
 
-PY_FILES := core.py decrypt.py credential-retrieval/retrieve.py credential-retrieval/native_ssh.py
+PY_FILES := core.py decrypt.py credential-retrieval/retrieve.py credential-retrieval/native_ssh.py tests/test_retrieve.py
 RUFF := uvx --from ruff==0.14.3 ruff
 BLACK := uvx --from black==26.10.1 black
 MYPY := uvx --from mypy==2.4.0 --with-requirements requirements.txt mypy

@@ -16,9 +16,10 @@ python3 credential-retrieval/retrieve.py --output-dir /path/to/new-output-direct
 ```
 
 The retriever uses the first installed app with a supported license. To
-select a particular account, pass `--ipa /path/to/app.ipa` or
-`--sinf /path/to/license.sinf`; an installed app under that account is still
-required. If an IPA has distinct license selectors, specify one with
+select a particular account and key, pass `--ipa /path/to/app.ipa` or
+`--sinf /path/to/license.sinf`; an installed app with the same account and key
+is still required. The retriever uses that installed app's SINF when collecting
+the credential. If an IPA has distinct license selectors, specify one with
 `--sinf-member`. Set `--ssh-port` if the USB SSH tunnel does not use port 2222.
 The output directory must not exist; it receives `credential.bin` for use
 with `decrypt.py --credential`.
