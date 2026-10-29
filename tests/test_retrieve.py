@@ -60,6 +60,7 @@ class InstalledLicenseTests(unittest.TestCase):
         udid = "a" * 40
         device = MagicMock()
         device.path.side_effect = lambda name: "/device/" + name
+        device.write.return_value = "/device/license.sinf"
         device.read.side_effect = [bytes.fromhex(udid), bytes(16)]
         device.trigger_directory = "/trigger"
         with tempfile.TemporaryDirectory() as directory:
