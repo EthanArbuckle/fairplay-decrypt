@@ -169,6 +169,7 @@ def trigger_app(
     device: SSHDevice, license_bytes: bytes | None
 ) -> tuple[str, str, bytes]:
     account = sinf_field(license_bytes, b"user") if license_bytes is not None else None
+    index = sinf_field(license_bytes, b"key ") if license_bytes is not None else None
     listing = device.run(
         "find /var/containers/Bundle/Application -type f -path '*/SC_Info/*.sinf' -print0"
     )
@@ -182,7 +183,11 @@ def trigger_app(
         try:
             installed_sinf = device.read(path)
             if len(installed_sinf) > MAX_SINF_BYTES or (
-                account is not None and sinf_field(installed_sinf, b"user") != account
+                account is not None
+                and (
+                    sinf_field(installed_sinf, b"user") != account
+                    or sinf_field(installed_sinf, b"key ") != index
+                )
             ):
                 continue
             if license_bytes is None and not supported_sinf(installed_sinf):
@@ -357,9 +362,7 @@ def main() -> None:
         if device.read(actual_udid) != fairplay_device_id(udid):
             raise ValueError("SSH tunnel is connected to a different device")
         installed_app, executable, installed_sinf = trigger_app(device, sinf)
-        license_path = device.write(
-            "license.sinf", sinf if sinf is not None else installed_sinf
-        )
+        license_path = device.write("license.sinf", installed_sinf)
         trigger_dir = device.trigger_directory
         device.run(
             "cp -R " + shlex.quote(installed_app) + " " + shlex.quote(trigger_dir)

@@ -1079,6 +1079,7 @@ static int run_retrieve(int argc, char **argv) {
         goto end;
     }
 
+    stage = "select installed license";
     if (select_license(clear, sinf, &selected) || write_new(source_path, selected.session, 16)) {
         goto end;
     }
