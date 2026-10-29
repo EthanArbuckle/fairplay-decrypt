@@ -93,7 +93,5 @@ class InstalledLicenseTests(unittest.TestCase):
 
         trigger.assert_called_once_with(device, selected)
         device.write.assert_any_call("license.sinf", installed)
-        self.assertNotIn(
-            call("license.sinf", selected), device.write.call_args_list
-        )
+        self.assertNotIn(call("license.sinf", selected), device.write.call_args_list)
         device.cleanup.assert_called_once_with()
