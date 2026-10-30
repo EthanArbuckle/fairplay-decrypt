@@ -120,13 +120,6 @@ def _arm64_slice_info(
     return MachoInfo(base, cryptoff, cryptsize, cryptid_offset, subtype)
 
 
-def arm64_encryption_info(data: bytes) -> MachoInfo:
-    infos = arm64_encryption_infos(data)
-    if len(infos) != 1:
-        raise ValueError(f"expected one arm64 slice, found {len(infos)}")
-    return infos[0]
-
-
 def _children(data: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
     offset = start
     while offset < end:
