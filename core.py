@@ -29,6 +29,7 @@ class MachoInfo:
     cryptoff: int
     cryptsize: int
     cryptid_offset: int
+    subtype: int
 
 
 def _xor(a: bytes, b: bytes) -> bytes:
@@ -41,13 +42,15 @@ def _xor_int(lhs: Sequence[int], rhs: Sequence[int]) -> Sequence[int]:
     return [x ^ y for x, y in zip(lhs, rhs)]
 
 
-def arm64_encryption_info(data: bytes) -> MachoInfo:
+def arm64_encryption_infos(data: bytes) -> list[MachoInfo]:
     if data[:4] == b"\xca\xfe\xba\xbe":
         count = struct.unpack_from(">I", data, 4)[0]
         if not 0 < count <= 16 or 8 + count * 20 > len(data):
             raise ValueError("invalid FAT32 architecture table")
         entries = [struct.unpack_from(">IIIII", data, 8 + i * 20) for i in range(count)]
-        arm = [(off, size) for cpu, _sub, off, size, _align in entries if cpu == ARM64]
+        arm = [
+            (off, size, sub) for cpu, sub, off, size, _align in entries if cpu == ARM64
+        ]
     elif data[:4] == b"\xca\xfe\xba\xbf":
         count = struct.unpack_from(">I", data, 4)[0]
         if not 0 < count <= 16 or 8 + count * 32 > len(data):
@@ -56,17 +59,27 @@ def arm64_encryption_info(data: bytes) -> MachoInfo:
             struct.unpack_from(">IIQQII", data, 8 + i * 32) for i in range(count)
         ]
         arm = [
-            (off, size)
-            for cpu, _sub, off, size, _align, _reserved in entries
+            (off, size, sub)
+            for cpu, sub, off, size, _align, _reserved in entries
             if cpu == ARM64
         ]
     elif data[:4] == b"\xcf\xfa\xed\xfe":
-        arm = [(0, len(data))]
+        arm = [(0, len(data), struct.unpack_from("<I", data, 8)[0])]
     else:
         raise ValueError("not a supported arm64 Mach-O")
-    if len(arm) != 1:
-        raise ValueError(f"expected one arm64 slice, found {len(arm)}")
-    base, slice_size = arm[0]
+    if not arm:
+        raise ValueError("no arm64 slices found")
+    infos = []
+    for base, size, subtype in arm:
+        info = _arm64_slice_info(data, base, size, subtype)
+        if info is not None:
+            infos.append(info)
+    return infos
+
+
+def _arm64_slice_info(
+    data: bytes, base: int, slice_size: int, subtype: int
+) -> MachoInfo | None:
     if base + slice_size > len(data) or base + 32 > len(data):
         raise ValueError("arm64 slice exceeds file")
     magic, cpu, _sub, _type, ncmds, sizeofcmds, _flags, _res = struct.unpack_from(
@@ -91,14 +104,20 @@ def arm64_encryption_info(data: bytes) -> MachoInfo:
             cryptoff, cryptsize, cryptid = struct.unpack_from("<III", data, pos + 8)
             found.append((cryptoff, cryptsize, cryptid, pos + 16))
         pos += size
+    if pos != commands_end:
+        raise ValueError("load command sizes do not match Mach-O header")
+    if not found:
+        return None
     if len(found) != 1:
         raise ValueError(f"expected one encryption command, found {len(found)}")
     cryptoff, cryptsize, cryptid, cryptid_offset = found[0]
+    if cryptid == 0:
+        return None
     if cryptid != 1 or cryptsize == 0 or cryptsize % PAGE_SIZE:
         raise ValueError(f"unsupported cryptid/size: {cryptid}, {cryptsize}")
     if cryptoff + cryptsize > slice_size or cryptid_offset >= base + cryptoff:
         raise ValueError("invalid encrypted region bounds")
-    return MachoInfo(base, cryptoff, cryptsize, cryptid_offset)
+    return MachoInfo(base, cryptoff, cryptsize, cryptid_offset, subtype)
 
 
 def _children(data: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
@@ -146,7 +165,9 @@ def derive_work16(credential: bytes, sinf: bytes) -> bytes:
     return clear[24:40]
 
 
-def arm64_supf_record_offset(supf: bytes, required_pages: int) -> int:
+def arm64_supf_record_offset(
+    supf: bytes, required_pages: int, wanted_subtype: int
+) -> int:
     if (
         len(supf) < 12
         or supf[0] not in (3, 5)
@@ -165,7 +186,7 @@ def arm64_supf_record_offset(supf: bytes, required_pages: int) -> int:
         if length < header_size or pos + 4 + length > len(supf):
             raise ValueError("invalid SUPF architecture length")
         pages = struct.unpack_from(">I", supf, pos + header_size)[0]
-        if cpu == ARM64 and subtype == 0:
+        if cpu == ARM64 and subtype == wanted_subtype:
             if pages < required_pages or length < header_size + pages * 32:
                 raise ValueError("SUPF arm64 page records are incomplete")
             return pos + 4 + header_size
@@ -227,22 +248,25 @@ def derive_page_key(wrapped: bytes, absolute_index: int, work: bytes) -> bytes:
 def decrypt_binary(
     source: bytes, sinf: bytes, supf: bytes, credential: bytes
 ) -> tuple[bytes, int]:
-    info = arm64_encryption_info(source)
-    page_count = info.cryptsize // PAGE_SIZE
-    record_start = arm64_supf_record_offset(supf, page_count)
+    infos = arm64_encryption_infos(source)
     work = derive_work16(credential, sinf)
     result = bytearray(source)
-    for local_page in range(page_count):
-        record = supf[
-            record_start + 32 * local_page : record_start + 32 * (local_page + 1)
-        ]
-        if len(record) != 32:
-            raise ValueError("truncated SUPF page record")
-        absolute_index = (info.base + info.cryptoff) // PAGE_SIZE + local_page
-        key = derive_page_key(record[:16], absolute_index, work)
-        start = info.base + info.cryptoff + PAGE_SIZE * local_page
-        ciphertext = source[start : start + PAGE_SIZE]
-        op = Cipher(algorithms.AES(key), modes.CBC(record[16:32])).decryptor()
-        result[start : start + PAGE_SIZE] = op.update(ciphertext) + op.finalize()
-    struct.pack_into("<I", result, info.cryptid_offset, 0)
-    return bytes(result), page_count
+    total_pages = 0
+    for info in infos:
+        page_count = info.cryptsize // PAGE_SIZE
+        record_start = arm64_supf_record_offset(supf, page_count, info.subtype)
+        total_pages += page_count
+        for local_page in range(page_count):
+            record = supf[
+                record_start + 32 * local_page : record_start + 32 * (local_page + 1)
+            ]
+            if len(record) != 32:
+                raise ValueError("truncated SUPF page record")
+            absolute_index = (info.base + info.cryptoff) // PAGE_SIZE + local_page
+            key = derive_page_key(record[:16], absolute_index, work)
+            start = info.base + info.cryptoff + PAGE_SIZE * local_page
+            ciphertext = source[start : start + PAGE_SIZE]
+            op = Cipher(algorithms.AES(key), modes.CBC(record[16:32])).decryptor()
+            result[start : start + PAGE_SIZE] = op.update(ciphertext) + op.finalize()
+        struct.pack_into("<I", result, info.cryptid_offset, 0)
+    return bytes(result), total_pages
