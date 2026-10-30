@@ -69,16 +69,18 @@ def arm64_encryption_infos(data: bytes) -> list[MachoInfo]:
         raise ValueError("not a supported arm64 Mach-O")
     if not arm:
         raise ValueError("no arm64 slices found")
-    try:
-        return [
-            _arm64_slice_info(data, base, size, subtype) for base, size, subtype in arm
-        ]
-    except ValueError as error:
-        if len(arm) > 1 and str(error).startswith("unsupported cryptid/size: 0,"):
-            raise ValueError(
-                "unsupported unencrypted slice in multi-slice binary"
-            ) from error
-        raise
+    infos = []
+    unencrypted_error = None
+    for base, size, subtype in arm:
+        try:
+            infos.append(_arm64_slice_info(data, base, size, subtype))
+        except ValueError as error:
+            if not str(error).startswith("unsupported cryptid/size: 0,"):
+                raise
+            unencrypted_error = error
+    if not infos and unencrypted_error is not None:
+        raise unencrypted_error
+    return infos
 
 
 def _arm64_slice_info(
