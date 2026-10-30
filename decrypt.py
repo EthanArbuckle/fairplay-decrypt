@@ -100,12 +100,8 @@ def main() -> None:
             if binary_path not in names:
                 raise ValueError(f"SUPF lacks binary/SINF: {supf_path}")
             source = archive.read(binary_path)
-            try:
-                arm64_encryption_infos(source)
-            except ValueError as error:
-                if str(error).startswith("unsupported cryptid/size: 0,"):
-                    continue
-                raise
+            if not arm64_encryption_infos(source):
+                continue
             if sinf_path not in names:
                 fallback = enclosing_app_sinf(names, bundle)
                 if fallback is None:

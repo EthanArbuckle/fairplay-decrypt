@@ -29,7 +29,7 @@ class MachoInfo:
     cryptoff: int
     cryptsize: int
     cryptid_offset: int
-    subtype: int = 0
+    subtype: int
 
 
 def _xor(a: bytes, b: bytes) -> bytes:
@@ -70,22 +70,16 @@ def arm64_encryption_infos(data: bytes) -> list[MachoInfo]:
     if not arm:
         raise ValueError("no arm64 slices found")
     infos = []
-    unencrypted_error = None
     for base, size, subtype in arm:
-        try:
-            infos.append(_arm64_slice_info(data, base, size, subtype))
-        except ValueError as error:
-            if not str(error).startswith("unsupported cryptid/size: 0,"):
-                raise
-            unencrypted_error = error
-    if not infos and unencrypted_error is not None:
-        raise unencrypted_error
+        info = _arm64_slice_info(data, base, size, subtype)
+        if info is not None:
+            infos.append(info)
     return infos
 
 
 def _arm64_slice_info(
     data: bytes, base: int, slice_size: int, subtype: int
-) -> MachoInfo:
+) -> MachoInfo | None:
     if base + slice_size > len(data) or base + 32 > len(data):
         raise ValueError("arm64 slice exceeds file")
     magic, cpu, _sub, _type, ncmds, sizeofcmds, _flags, _res = struct.unpack_from(
@@ -110,9 +104,15 @@ def _arm64_slice_info(
             cryptoff, cryptsize, cryptid = struct.unpack_from("<III", data, pos + 8)
             found.append((cryptoff, cryptsize, cryptid, pos + 16))
         pos += size
+    if pos != commands_end:
+        raise ValueError("load command sizes do not match Mach-O header")
+    if not found:
+        return None
     if len(found) != 1:
         raise ValueError(f"expected one encryption command, found {len(found)}")
     cryptoff, cryptsize, cryptid, cryptid_offset = found[0]
+    if cryptid == 0:
+        return None
     if cryptid != 1 or cryptsize == 0 or cryptsize % PAGE_SIZE:
         raise ValueError(f"unsupported cryptid/size: {cryptid}, {cryptsize}")
     if cryptoff + cryptsize > slice_size or cryptid_offset >= base + cryptoff:
@@ -166,7 +166,7 @@ def derive_work16(credential: bytes, sinf: bytes) -> bytes:
 
 
 def arm64_supf_record_offset(
-    supf: bytes, required_pages: int, wanted_subtype: int = 0
+    supf: bytes, required_pages: int, wanted_subtype: int
 ) -> int:
     if (
         len(supf) < 12
