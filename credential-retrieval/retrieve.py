@@ -169,6 +169,8 @@ def trigger_app(
     device: SSHDevice, license_bytes: bytes | None
 ) -> tuple[str, str, bytes]:
     account = sinf_field(license_bytes, b"user") if license_bytes is not None else None
+    key = sinf_field(license_bytes, b"key ") if license_bytes is not None else None
+    fallback: tuple[str, str, bytes] | None = None
     listing = device.run(
         "find /var/containers/Bundle/Application -type f -path '*/SC_Info/*.sinf' -print0"
     )
@@ -195,9 +197,15 @@ def trigger_app(
                 or "/" in executable
             ):
                 continue
-            return str(bundle), executable, installed_sinf
+            candidate = str(bundle), executable, installed_sinf
+            if key is None or sinf_field(installed_sinf, b"key ") == key:
+                return candidate
+            if fallback is None:
+                fallback = candidate
         except (KeyError, ValueError, plistlib.InvalidFileException):
             continue
+    if fallback is not None:
+        return fallback
     raise RuntimeError(
         "no installed App Store app has a supported license for the selected account"
     )
@@ -211,7 +219,7 @@ def fairplayd_pid(device: SSHDevice) -> int:
         if (
             len(fields) == 2
             and fields[0].isdigit()
-            and re.fullmatch(r"fairplayd(?:\.[AH][0-9]+)?", Path(fields[1]).name)
+            and Path(fields[1]).name.split(".", 1)[0] == "fairplayd"
         ):
             pids.append(int(fields[0]))
     if len(pids) != 1:
@@ -256,10 +264,16 @@ def observe_uid_layer(
     output: str,
     trigger_program: str,
     executable: str,
+    license_path: str | None = None,
+    bundle_id: str | None = None,
+    installed_executable: str | None = None,
 ) -> None:
-    command = " ".join(
-        map(shlex.quote, (program, "observe-uid-layer", str(pid), output, "90"))
+    arguments = (
+        (program, "observe-uid-layer", str(pid), output, "90")
+        if license_path is None
+        else (program, "observe-credential", str(pid), license_path, output, "90")
     )
+    command = " ".join(map(shlex.quote, arguments))
     observer = subprocess.Popen(
         device.command + [command], stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
@@ -272,7 +286,7 @@ def observe_uid_layer(
         if not select.select([stderr], [], [], 15)[0]:
             raise RuntimeError("FairPlay observer did not become ready")
         ready = stderr.readline()
-        if b"observing FairPlay requests" not in ready:
+        if b"observing FairPlay " not in ready:
             raise RuntimeError(
                 "FairPlay observer failed: " + ready.decode("utf-8", "replace")
             )
@@ -290,12 +304,18 @@ def observe_uid_layer(
                 raise RuntimeError(
                     "FairPlay trigger failed: " + failure.decode("utf-8", "replace")
                 )
-            direct_process = subprocess.Popen(
-                device.command + [shlex.quote(executable)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            if bundle_id is not None:
+                device.run("command -v uiopen")
+                device.run(
+                    " ".join(map(shlex.quote, ("uiopen", "--bundleid", bundle_id)))
+                )
+            else:
+                direct_process = subprocess.Popen(
+                    device.command + [shlex.quote(executable)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
         output_bytes, errors = observer.communicate(timeout=100)
         if observer.returncode:
             raise RuntimeError(
@@ -304,6 +324,8 @@ def observe_uid_layer(
             )
     finally:
         stop_remote(device, trigger_program)
+        if installed_executable is not None:
+            stop_remote(device, installed_executable)
         if direct_process is not None:
             stop_remote(device, executable)
             if direct_process.poll() is None:
@@ -357,9 +379,24 @@ def main() -> None:
         if device.read(actual_udid) != fairplay_device_id(udid):
             raise ValueError("SSH tunnel is connected to a different device")
         installed_app, executable, installed_sinf = trigger_app(device, sinf)
-        license_path = device.write(
-            "license.sinf", sinf if sinf is not None else installed_sinf
-        )
+        selected_sinf = sinf if sinf is not None else installed_sinf
+        arcade = sinf_field(selected_sinf, b"key ")[0] == 4
+        if arcade and sinf_field(installed_sinf, b"key ") != sinf_field(
+            selected_sinf, b"key "
+        ):
+            raise RuntimeError(
+                "an installed app with this FairPlay selector is required"
+            )
+        license_path = device.write("license.sinf", selected_sinf)
+        bundle_id = None
+        installed_executable = None
+        if arcade:
+            installed_executable = str(Path(installed_app) / executable)
+            info = plistlib.loads(device.read(str(Path(installed_app) / "Info.plist")))
+            bundle_id = info["CFBundleIdentifier"]
+            if not isinstance(bundle_id, str) or not bundle_id or "/" in bundle_id:
+                raise ValueError("invalid installed app bundle identifier")
+            stop_remote(device, installed_executable)
         trigger_dir = device.trigger_directory
         device.run(
             "cp -R " + shlex.quote(installed_app) + " " + shlex.quote(trigger_dir)
@@ -368,29 +405,33 @@ def main() -> None:
             Path(trigger_dir) / Path(installed_app).name / executable
         )
         uid_layer_path = device.path("uid-layer.bin")
+        credential_path = device.path("credential.bin")
         observe_uid_layer(
             device,
             program,
             restart_fairplayd(device),
-            uid_layer_path,
+            credential_path if arcade else uid_layer_path,
             device.path("trigger.ios"),
             unique_executable,
+            license_path if arcade else None,
+            bundle_id,
+            installed_executable,
         )
-        credential_path = device.path("credential.bin")
-        device.run(
-            " ".join(
-                map(
-                    shlex.quote,
-                    (
-                        program,
-                        "retrieve",
-                        license_path,
-                        uid_layer_path,
-                        credential_path,
-                    ),
+        if not arcade:
+            device.run(
+                " ".join(
+                    map(
+                        shlex.quote,
+                        (
+                            program,
+                            "retrieve",
+                            license_path,
+                            uid_layer_path,
+                            credential_path,
+                        ),
+                    )
                 )
             )
-        )
         credential = device.read(credential_path)
     finally:
         device.cleanup()

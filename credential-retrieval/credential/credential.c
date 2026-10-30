@@ -4,6 +4,7 @@
 #include "core4_native.h"
 #include "observer.h"
 #include <CommonCrypto/CommonCryptor.h>
+#include <CommonCrypto/CommonDigest.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
 #include <limits.h>
@@ -997,6 +998,147 @@ end:
     return result;
 }
 
+typedef struct {
+    Bytes priv;
+    uint8_t iv[16];
+    const char *output;
+    unsigned hits;
+} LiveCredential;
+
+static int live_credential_matches(const uint8_t credential[16], LiveCredential *live) {
+    uint8_t key[16], clear[48];
+    for (size_t i = 0; i < sizeof(key); i++) {
+        key[i] = credential[i] ^ 0x30;
+    }
+
+    size_t written = 0;
+    CCCryptorStatus status = CCCrypt(kCCDecrypt, kCCAlgorithmAES, kCCOptionECBMode, key, sizeof(key), NULL, live->priv.data, 16, clear, 16, &written);
+    int matched = status == kCCSuccess && written == 16;
+    if (matched) {
+        for (size_t i = 0; i < 16; i++) {
+            clear[i] ^= live->iv[i];
+        }
+
+        matched = !memcmp(clear, "itun", 4);
+    }
+
+    if (matched) {
+        status = CCCrypt(kCCDecrypt, kCCAlgorithmAES, 0, key, sizeof(key), live->iv, live->priv.data, sizeof(clear), clear, sizeof(clear), &written);
+        matched = status == kCCSuccess && written == sizeof(clear) && !memcmp(clear, "itun", 4) && !memcmp(clear + 20, "key ", 4) && !memcmp(clear + 44, "iviv", 4);
+    }
+
+    memset(key, 0, sizeof(key));
+    memset(clear, 0, sizeof(clear));
+    return matched;
+}
+
+static int live_credential_callback(mach_port_t task, uint64_t argument, void *opaque) {
+    LiveCredential *live = opaque;
+    live->hits++;
+    if (argument > UINT64_MAX - 0x100) {
+        return 0;
+    }
+
+    uint64_t parent = 0;
+    uint8_t encoded[16] = {0};
+    vm_size_t read_size = 0;
+    if (vm_read_overwrite(task, (vm_address_t)argument, sizeof(parent), (vm_address_t)(uintptr_t)&parent, &read_size) == KERN_SUCCESS && read_size == sizeof(parent) && parent && vm_read_overwrite(task, (vm_address_t)parent, sizeof(encoded), (vm_address_t)(uintptr_t)encoded, &read_size) == KERN_SUCCESS && read_size == sizeof(encoded)) {
+        uint8_t credential[16] = {0};
+        for (unsigned mask = 0; mask < 256; mask++) {
+            for (size_t i = 0; i < sizeof(credential); i++) {
+                credential[i] = encoded[i] ^ (uint8_t)mask;
+            }
+
+            if (live_credential_matches(credential, live)) {
+                int result = write_new(live->output, credential, sizeof(credential)) ? -1 : 1;
+                memset(credential, 0, sizeof(credential));
+                memset(encoded, 0, sizeof(encoded));
+                return result;
+            }
+        }
+
+        memset(credential, 0, sizeof(credential));
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    for (size_t offset = 0; offset < 0x100; offset += sizeof(uint64_t)) {
+        uint64_t pointer = 0;
+        read_size = 0;
+        if (vm_read_overwrite(task, (vm_address_t)(argument + offset), sizeof(pointer), (vm_address_t)(uintptr_t)&pointer, &read_size) != KERN_SUCCESS || read_size != sizeof(pointer)) {
+            continue;
+        }
+
+        uint64_t addresses[] = {argument + offset, pointer};
+        for (size_t i = 0; i < sizeof(addresses) / sizeof(addresses[0]); i++) {
+            uint8_t credential[16] = {0};
+            if (!addresses[i] || vm_read_overwrite(task, (vm_address_t)addresses[i], sizeof(credential), (vm_address_t)(uintptr_t)credential, &read_size) != KERN_SUCCESS || read_size != sizeof(credential)) {
+                continue;
+            }
+
+            int matched = live_credential_matches(credential, live);
+            int result = matched ? (write_new(live->output, credential, sizeof(credential)) ? -1 : 1) : 0;
+            memset(credential, 0, sizeof(credential));
+            if (result) {
+                return result;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int run_observe_credential(int argc, char **argv) {
+    if ((argc != 5 && argc != 6) || access(argv[4], F_OK) == 0) {
+        return 2;
+    }
+
+    char *end = NULL;
+    errno = 0;
+    long parsed = strtol(argv[2], &end, 10);
+    if (errno || !end || *end || parsed <= 0 || parsed > INT_MAX) {
+        return 2;
+    }
+
+    unsigned seconds = 90;
+    if (argc == 6) {
+        errno = 0;
+        unsigned long requested = strtoul(argv[5], &end, 10);
+        if (errno || !end || *end || requested == 0 || requested > 600) {
+            return 2;
+        }
+
+        seconds = (unsigned)requested;
+    }
+
+    Bytes sinf = {0};
+    Bytes name = {0}, iviv = {0}, priv = {0};
+    LiveCredential live = {0};
+    int result = 1;
+    if (read_file(argv[3], &sinf) || atom_field(sinf, "name", &name) || atom_field(sinf, "iviv", &iviv) || atom_field(sinf, "priv", &priv) || iviv.size != 16 || priv.size < 48) {
+        fprintf(stderr, "invalid SINF\n");
+        goto end;
+    }
+
+    size_t name_length = strnlen((const char *)name.data, name.size);
+    CC_MD5_CTX md5;
+    CC_MD5_Init(&md5);
+    CC_MD5_Update(&md5, name.data, (CC_LONG)name_length);
+    CC_MD5_Update(&md5, iviv.data, (CC_LONG)iviv.size);
+    CC_MD5_Final(live.iv, &md5);
+    live.priv = priv;
+    live.output = argv[4];
+    int found = observe_fairplay_credential((pid_t)parsed, live_credential_callback, &live, seconds);
+    result = found == 1 ? 0 : 1;
+    if (result) {
+        fprintf(stderr, "FairPlay credential observation failed or timed out (transform calls=%u)\n", live.hits);
+    }
+
+end:
+    free(sinf.data);
+    memset(live.iv, 0, sizeof(live.iv));
+    return result;
+}
+
 static int run_retrieve(int argc, char **argv) {
     if (argc != 4 && argc != 5) {
         return 2;
@@ -1171,14 +1313,17 @@ int main(int argc, char **argv) {
         status = run_device_udid(argc, argv);
     } else if (argc >= 2 && !strcmp(argv[1], "observe-uid-layer")) {
         status = run_observe_uid_layer(argc, argv);
+    } else if (argc >= 2 && !strcmp(argv[1], "observe-credential")) {
+        status = run_observe_credential(argc, argv);
     }
 
-    if (status && (argc < 2 || (strcmp(argv[1], "retrieve") && strcmp(argv[1], "device-udid") && strcmp(argv[1], "observe-uid-layer")) || status == 2)) {
+    if (status && (argc < 2 || (strcmp(argv[1], "retrieve") && strcmp(argv[1], "device-udid") && strcmp(argv[1], "observe-uid-layer") && strcmp(argv[1], "observe-credential")) || status == 2)) {
         fprintf(stderr,
                 "usage: %s retrieve IPA_OR_SINF UID_LAYER [NEW_CREDENTIAL]\n"
                 "       %s device-udid NEW_FILE\n"
-                "       %s observe-uid-layer PID NEW_UID_LAYER [TIMEOUT_SECONDS]\n",
-                argv[0], argv[0], argv[0]);
+                "       %s observe-uid-layer PID NEW_UID_LAYER [TIMEOUT_SECONDS]\n"
+                "       %s observe-credential PID SINF NEW_CREDENTIAL [TIMEOUT_SECONDS]\n",
+                argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
 

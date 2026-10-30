@@ -23,4 +23,14 @@ required. If an IPA has distinct license selectors, specify one with
 The output directory must not exist; it receives `credential.bin` for use
 with `decrypt.py --credential`.
 
+## Apple Arcade
+
+Apple Arcade apps need a different credential from regular App Store apps.
+The normal credential decrypts regular apps, and the Arcade credential
+decrypts Arcade apps. You need both to decrypt both types. Each credential
+works with apps from the Apple Account it came from.
+
+To retrieve an Arcade credential, pass an Arcade IPA with `--ipa` and have
+an Arcade app from that account installed on the device.
+
 Build on a Mac with Xcode and `ldid`.
