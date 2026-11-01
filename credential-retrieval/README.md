@@ -34,3 +34,26 @@ To retrieve an Arcade credential, pass an Arcade IPA with `--ipa` and have
 an Arcade app from that account installed on the device.
 
 Build on a Mac with Xcode and `ldid`.
+
+## GitHub Actions builds
+
+The **Build credential retrieval** workflow builds and signs the arm64 iOS
+bundle on macOS for pull requests and pushes that change the retriever or
+its build configuration. It can also be run manually from the Actions tab.
+
+Successful runs on the default branch also update the
+[Latest rolling release](https://github.com/EthanArbuckle/fairplay-decrypt/releases/tag/latest).
+Download `credential-bundle-ios-arm64.zip` from that release for a stable
+download location. The `latest` tag tracks the published build's commit,
+and the ZIP is replaced with each new build. Pull requests do not publish.
+
+Download the `credential-bundle-ios-arm64` artifact ZIP from a successful
+run. It contains the build folder's contents, including `bundle/`.
+Extract it from the project root:
+
+```sh
+unzip /path/to/credential-bundle-ios-arm64.zip -d credential-retrieval/build
+```
+
+This populates `credential-retrieval/build/bundle`, so you can run
+`retrieve.py` without building locally. Artifacts are retained for 14 days.
