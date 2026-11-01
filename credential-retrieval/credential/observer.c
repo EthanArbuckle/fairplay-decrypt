@@ -307,6 +307,31 @@ static int credential_transform_candidate_context(const uint8_t *code, size_t re
     return reads_length && reads_priv;
 }
 
+static int credential_transform_candidate_arcade(const uint8_t *code, size_t remaining) {
+    /* iOS 16.7.16 fairplayd.H2: the encoded credential is reached through
+     * the context's +0x10 pointer, rather than its first pointer. Match
+     * instructions and context accesses, never an image-specific address. */
+    static const uint8_t prologue[] = {
+        0xfc, 0x6f, 0xba, 0xa9, 0xfa, 0x67, 0x01, 0xa9, 0xf8, 0x5f, 0x02, 0xa9, 0xf6, 0x57, 0x03, 0xa9,
+        0xf4, 0x4f, 0x04, 0xa9, 0xfd, 0x7b, 0x05, 0xa9, 0xfd, 0x43, 0x01, 0x91,
+    };
+    if (remaining < 0x180 || memcmp(code, prologue, sizeof(prologue)) ||
+        (instruction(code + 28) & 0xffc003ff) != 0xd10003ff ||
+        instruction(code + 32) != 0xaa0003f7 ||
+        instruction(code + 36) != 0x5280000b ||
+        instruction(code + 40) != 0xaa2003e9) {
+        return 0;
+    }
+
+    int reads_control = 0, reads_parent = 0;
+    for (size_t at = 44; at < 0x180; at += 4) {
+        uint32_t word = instruction(code + at);
+        reads_control |= (word & 0xffffffe0) == 0xb9403000;
+        reads_parent |= (word & 0xffffffe0) == 0xf9400000;
+    }
+    return reads_control && reads_parent;
+}
+
 static int credential_transform_address(task_t task, uint64_t base, uint64_t *address) {
     struct mach_header_64 header = {0};
     if (read_remote(task, base, &header, sizeof(header)) || header.magic != MH_MAGIC_64 || header.filetype != MH_EXECUTE || header.ncmds > 4096 || header.sizeofcmds > 1024 * 1024) {
@@ -374,8 +399,8 @@ static int credential_transform_address(task_t task, uint64_t base, uint64_t *ad
         }
     }
 
-    unsigned original_matches = 0, context_matches = 0;
-    uint64_t original_address = 0, context_address = 0;
+    unsigned original_matches = 0, context_matches = 0, arcade_matches = 0;
+    uint64_t original_address = 0, context_address = 0, arcade_address = 0;
     for (uint64_t offset = 0; offset + 0x1500 <= text_size; offset += 4) {
         if (credential_transform_candidate_original(code + offset, (size_t)(text_size - offset))) {
             original_address = runtime_text + offset;
@@ -385,6 +410,11 @@ static int credential_transform_address(task_t task, uint64_t base, uint64_t *ad
         if (credential_transform_candidate_context(code + offset, (size_t)(text_size - offset))) {
             context_address = runtime_text + offset;
             context_matches++;
+        }
+
+        if (credential_transform_candidate_arcade(code + offset, (size_t)(text_size - offset))) {
+            arcade_address = runtime_text + offset;
+            arcade_matches++;
         }
     }
 
@@ -396,6 +426,11 @@ static int credential_transform_address(task_t task, uint64_t base, uint64_t *ad
 
     if (context_matches == 0 && original_matches == 1) {
         *address = original_address;
+        return 0;
+    }
+
+    if (context_matches == 0 && original_matches == 0 && arcade_matches == 1) {
+        *address = arcade_address;
         return 0;
     }
 

