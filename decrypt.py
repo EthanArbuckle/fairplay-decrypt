@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from zipfile import ZipFile
 
-from core import arm64_encryption_infos, decrypt_binary
+from core import arm_encryption_infos, decrypt_binary
 
 ROOT = Path(__file__).resolve().parent
 COPY_BUFSIZE = 64 * 1024
@@ -100,7 +100,7 @@ def main() -> None:
             if binary_path not in names:
                 raise ValueError(f"SUPF lacks binary/SINF: {supf_path}")
             source = archive.read(binary_path)
-            if not arm64_encryption_infos(source):
+            if not arm_encryption_infos(source):
                 continue
             if sinf_path not in names:
                 fallback = enclosing_app_sinf(names, bundle)
@@ -116,7 +116,7 @@ def main() -> None:
                 )
             )
         if not plan:
-            raise ValueError("no encrypted arm64 binaries with supported SINF/SUPF")
+            raise ValueError("no encrypted arm binaries with supported SINF/SUPF")
         replacements = {}
         total_pages = 0
         for ordinal, (binary_path, source, sinf, supf) in enumerate(plan, 1):

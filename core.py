@@ -9,7 +9,14 @@ from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+ARM32 = 0x0000000C
 ARM64 = 0x0100000C
+ARM64_32 = 0x0200000C
+ARM_CPU_TYPES = (ARM32, ARM64, ARM64_32)
+MH_MAGIC = 0xFEEDFACE
+MH_MAGIC_64 = 0xFEEDFACF
+LC_ENCRYPTION_INFO = 0x21
+LC_ENCRYPTION_INFO_64 = 0x2C
 MASK32 = 0xFFFFFFFF
 PAGE_SIZE = 4096
 ROUND_SELECTORS = (
@@ -29,6 +36,7 @@ class MachoInfo:
     cryptoff: int
     cryptsize: int
     cryptid_offset: int
+    cpu: int
     subtype: int
 
 
@@ -42,55 +50,83 @@ def _xor_int(lhs: Sequence[int], rhs: Sequence[int]) -> Sequence[int]:
     return [x ^ y for x, y in zip(lhs, rhs)]
 
 
-def arm64_encryption_infos(data: bytes) -> list[MachoInfo]:
+def arm_encryption_infos(data: bytes) -> list[MachoInfo]:
     if data[:4] == b"\xca\xfe\xba\xbe":
         count = struct.unpack_from(">I", data, 4)[0]
         if not 0 < count <= 16 or 8 + count * 20 > len(data):
             raise ValueError("invalid FAT32 architecture table")
-        entries = [struct.unpack_from(">IIIII", data, 8 + i * 20) for i in range(count)]
+        # fat_arch: int32_t cputype, int32_t cpusubtype, uint32_t offset/size/align.
+        entries = [struct.unpack_from(">iiIII", data, 8 + i * 20) for i in range(count)]
         arm = [
-            (off, size, sub) for cpu, sub, off, size, _align in entries if cpu == ARM64
+            (off, size, sub)
+            for cpu, sub, off, size, _align in entries
+            if cpu in ARM_CPU_TYPES
         ]
     elif data[:4] == b"\xca\xfe\xba\xbf":
         count = struct.unpack_from(">I", data, 4)[0]
         if not 0 < count <= 16 or 8 + count * 32 > len(data):
             raise ValueError("invalid FAT64 architecture table")
+        # fat_arch_64: int32_t cputype, int32_t cpusubtype, uint64_t offset/size.
         entries = [
-            struct.unpack_from(">IIQQII", data, 8 + i * 32) for i in range(count)
+            struct.unpack_from(">iiQQII", data, 8 + i * 32) for i in range(count)
         ]
         arm = [
             (off, size, sub)
             for cpu, sub, off, size, _align, _reserved in entries
-            if cpu == ARM64
+            if cpu in ARM_CPU_TYPES
         ]
-    elif data[:4] == b"\xcf\xfa\xed\xfe":
-        arm = [(0, len(data), struct.unpack_from("<I", data, 8)[0])]
+    elif data[:4] in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe"):
+        # Thin Mach-O: cputype at offset 4, cpusubtype at offset 8 (int32_t).
+        _cpu, subtype = struct.unpack_from("<ii", data, 4)
+        arm = [(0, len(data), subtype)]
     else:
-        raise ValueError("not a supported arm64 Mach-O")
+        raise ValueError("not a supported arm Mach-O")
     if not arm:
-        raise ValueError("no arm64 slices found")
+        raise ValueError("no arm slices found")
     infos = []
-    for base, size, subtype in arm:
-        info = _arm64_slice_info(data, base, size, subtype)
-        if info is not None:
-            infos.append(info)
+    for base, size, fat_subtype in arm:
+        info = _arm_slice_info(data, base, size)
+        if info is None:
+            continue
+        if info.subtype != fat_subtype:
+            raise ValueError(
+                f"slice cpusubtype {info.subtype:#x} disagrees with "
+                f"FAT cpusubtype {fat_subtype:#x}"
+            )
+        infos.append(info)
     return infos
 
 
-def _arm64_slice_info(
-    data: bytes, base: int, slice_size: int, subtype: int
-) -> MachoInfo | None:
-    if base + slice_size > len(data) or base + 32 > len(data):
-        raise ValueError("arm64 slice exceeds file")
-    magic, cpu, _sub, _type, ncmds, sizeofcmds, _flags, _res = struct.unpack_from(
-        "<IiiIIIII", data, base
-    )
-    if magic != 0xFEEDFACF or cpu != ARM64 or ncmds > 1000:
-        raise ValueError("invalid arm64 Mach-O header")
-    pos = base + 32
+def _arm_slice_info(data: bytes, base: int, slice_size: int) -> MachoInfo | None:
+    if base + slice_size > len(data) or base + 28 > len(data):
+        raise ValueError("Mach-O slice exceeds file")
+    magic = struct.unpack_from("<I", data, base)[0]
+    if magic == MH_MAGIC_64:
+        if base + 32 > len(data):
+            raise ValueError("truncated arm64 Mach-O header")
+        # cputype/cpusubtype are int32_t per <mach-o/loader.h>.
+        _magic, cpu, subtype, _type, ncmds, sizeofcmds, _flags, _res = (
+            struct.unpack_from("<IiiIIIII", data, base)
+        )
+        if cpu != ARM64:
+            raise ValueError("invalid arm64 Mach-O header")
+        header_size, encryption_command = 32, LC_ENCRYPTION_INFO_64
+    elif magic == MH_MAGIC:
+        # cputype/cpusubtype are int32_t per <mach-o/loader.h>.
+        _magic, cpu, subtype, _type, ncmds, sizeofcmds, _flags = struct.unpack_from(
+            "<IiiIIII", data, base
+        )
+        if cpu not in (ARM32, ARM64_32):
+            raise ValueError("invalid arm Mach-O header")
+        header_size, encryption_command = 28, LC_ENCRYPTION_INFO
+    else:
+        raise ValueError("invalid Mach-O header")
+    if ncmds > 1000:
+        raise ValueError("too many load commands")
+    pos = base + header_size
     commands_end = pos + sizeofcmds
     if commands_end > base + slice_size:
-        raise ValueError("load commands exceed arm64 slice")
+        raise ValueError("load commands exceed Mach-O slice")
     found = []
     for _ in range(ncmds):
         if pos + 8 > commands_end:
@@ -98,8 +134,8 @@ def _arm64_slice_info(
         cmd, size = struct.unpack_from("<II", data, pos)
         if size < 8 or pos + size > commands_end:
             raise ValueError("invalid load command")
-        if cmd == 0x2C:
-            if size < 24:
+        if cmd == encryption_command:
+            if size < 20:
                 raise ValueError("short encryption info command")
             cryptoff, cryptsize, cryptid = struct.unpack_from("<III", data, pos + 8)
             found.append((cryptoff, cryptsize, cryptid, pos + 16))
@@ -117,7 +153,7 @@ def _arm64_slice_info(
         raise ValueError(f"unsupported cryptid/size: {cryptid}, {cryptsize}")
     if cryptoff + cryptsize > slice_size or cryptid_offset >= base + cryptoff:
         raise ValueError("invalid encrypted region bounds")
-    return MachoInfo(base, cryptoff, cryptsize, cryptid_offset, subtype)
+    return MachoInfo(base, cryptoff, cryptsize, cryptid_offset, cpu, subtype)
 
 
 def _children(data: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
@@ -165,8 +201,8 @@ def derive_work16(credential: bytes, sinf: bytes) -> bytes:
     return clear[24:40]
 
 
-def arm64_supf_record_offset(
-    supf: bytes, required_pages: int, wanted_subtype: int
+def arm_supf_record_offset(
+    supf: bytes, required_pages: int, wanted_cpu: int, wanted_subtype: int
 ) -> int:
     if (
         len(supf) < 12
@@ -182,16 +218,17 @@ def arm64_supf_record_offset(
     for _ in range(count):
         if pos + 4 + header_size > len(supf):
             raise ValueError("truncated SUPF architecture header")
-        length, cpu, subtype = struct.unpack_from(">III", supf, pos)
+        # cpu/subtype mirror Mach-O cputype/cpusubtype (int32_t).
+        length, cpu, subtype = struct.unpack_from(">Iii", supf, pos)
         if length < header_size or pos + 4 + length > len(supf):
             raise ValueError("invalid SUPF architecture length")
         pages = struct.unpack_from(">I", supf, pos + header_size)[0]
-        if cpu == ARM64 and subtype == wanted_subtype:
+        if cpu == wanted_cpu and subtype == wanted_subtype:
             if pages < required_pages or length < header_size + pages * 32:
-                raise ValueError("SUPF arm64 page records are incomplete")
+                raise ValueError("SUPF page records are incomplete")
             return pos + 4 + header_size
         pos += length + 4
-    raise ValueError("arm64 SUPF record missing")
+    raise ValueError("SUPF record missing for slice")
 
 
 def source_blocks(wrapped: bytes, absolute_index: int) -> tuple[bytes, bytes, bytes]:
@@ -248,13 +285,13 @@ def derive_page_key(wrapped: bytes, absolute_index: int, work: bytes) -> bytes:
 def decrypt_binary(
     source: bytes, sinf: bytes, supf: bytes, credential: bytes
 ) -> tuple[bytes, int]:
-    infos = arm64_encryption_infos(source)
+    infos = arm_encryption_infos(source)
     work = derive_work16(credential, sinf)
     result = bytearray(source)
     total_pages = 0
     for info in infos:
         page_count = info.cryptsize // PAGE_SIZE
-        record_start = arm64_supf_record_offset(supf, page_count, info.subtype)
+        record_start = arm_supf_record_offset(supf, page_count, info.cpu, info.subtype)
         total_pages += page_count
         for local_page in range(page_count):
             record = supf[
