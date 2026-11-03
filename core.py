@@ -201,6 +201,28 @@ def derive_work16(credential: bytes, sinf: bytes) -> bytes:
     return clear[24:40]
 
 
+def pclass_page_key_offset(supp: bytes, absolute_page: int) -> int:
+    """Return the offset of the 32-byte key for ``absolute_page`` in p-class.
+
+    p-class (``.supp`` v01 / ``.v4.supp`` v04) is a single table that indexes
+    every 4 KB page of the file from offset 0, so page ``p`` is at
+    ``base + 32 * p``. The v01 header stores a 20-byte code-signature SHA-1
+    that v04 omits.
+    """
+    version = supp[0]
+    if len(supp) < 8 or version not in (1, 4):
+        raise ValueError("unsupported SUPP format")
+    pos = 4 + (20 if version == 1 else 0)
+    if pos + 4 > len(supp):
+        raise ValueError("truncated SUPP header")
+    count = struct.unpack_from(">I", supp, pos)[0]
+    if not 0 < count <= 1 << 20 or pos + 4 + count * 32 > len(supp):
+        raise ValueError("invalid SUPP page count")
+    if not 0 <= absolute_page < count:
+        raise ValueError("SUPP page key missing")
+    return pos + 4 + 32 * absolute_page
+
+
 def arm_supf_record_offset(
     supf: bytes, required_pages: int, wanted_cpu: int, wanted_subtype: int
 ) -> int:
@@ -288,22 +310,29 @@ def decrypt_binary(
     infos = arm_encryption_infos(source)
     work = derive_work16(credential, sinf)
     result = bytearray(source)
+    pclass = supf[:1] == b"\x01" or supf[:1] == b"\x04"
     total_pages = 0
     for info in infos:
         page_count = info.cryptsize // PAGE_SIZE
-        record_start = arm_supf_record_offset(supf, page_count, info.cpu, info.subtype)
+        first_page = (info.base + info.cryptoff) // PAGE_SIZE
+        record_start = (
+            0
+            if pclass
+            else arm_supf_record_offset(supf, page_count, info.cpu, info.subtype)
+        )
         total_pages += page_count
         for local_page in range(page_count):
-            record = supf[
-                record_start + 32 * local_page : record_start + 32 * (local_page + 1)
-            ]
+            absolute_index = first_page + local_page
+            if pclass:
+                record_start = pclass_page_key_offset(supf, absolute_index)
+            record = supf[record_start : record_start + 32]
             if len(record) != 32:
                 raise ValueError("truncated SUPF page record")
-            absolute_index = (info.base + info.cryptoff) // PAGE_SIZE + local_page
             key = derive_page_key(record[:16], absolute_index, work)
             start = info.base + info.cryptoff + PAGE_SIZE * local_page
             ciphertext = source[start : start + PAGE_SIZE]
             op = Cipher(algorithms.AES(key), modes.CBC(record[16:32])).decryptor()
             result[start : start + PAGE_SIZE] = op.update(ciphertext) + op.finalize()
+            record_start += 32
         struct.pack_into("<I", result, info.cryptid_offset, 0)
     return bytes(result), total_pages

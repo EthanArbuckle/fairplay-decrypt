@@ -18,13 +18,21 @@ COPY_BUFSIZE = 64 * 1024
 
 
 def supf_paths(names: set[str]) -> list[str]:
-    by_binary = {}
-    for name in sorted(names):
-        if name.endswith(".v5.supf"):
-            by_binary[name.removesuffix(".v5.supf")] = name
-        elif name.endswith(".supf"):
-            by_binary.setdefault(name.removesuffix(".supf"), name)
-    return sorted(by_binary.values())
+    # Both container classes are accepted: f-class (.supf/.v5.supf) and
+    # p-class (.supp/.v4.supp). Per binary stem, keep the container whose
+    # suffix ranks best, so a newer-generation container always outranks its
+    # legacy counterpart.
+    suffixes = (".v5.supf", ".v4.supp", ".supf", ".supp")
+    best: dict[str, tuple[int, str]] = {}
+    for name in names:
+        for priority, suffix in enumerate(suffixes):
+            if name.endswith(suffix):
+                stem = name.removesuffix(suffix)
+                current = best.get(stem)
+                if current is None or priority < current[0]:
+                    best[stem] = (priority, name)
+                break
+    return sorted(name for priority, name in best.values())
 
 
 def enclosing_app_sinf(names: set[str], bundle: str) -> str | None:
@@ -85,17 +93,18 @@ def main() -> None:
             if len(parts) != 2:
                 raise ValueError(f"SUPF outside SC_Info: {supf_path}")
             bundle, filename = parts
-            stem = (
-                filename.removesuffix(".v5.supf")
-                if filename.endswith(".v5.supf")
-                else filename.removesuffix(".supf")
+            suffix = next(
+                s
+                for s in (".v5.supf", ".v4.supp", ".supf", ".supp")
+                if filename.endswith(s)
             )
+            stem = filename.removesuffix(suffix)
             binary_path = bundle + "/" + stem
-            sinf_name = (
-                stem + ".v4.sinf" if filename.endswith(".v5.supf") else stem + ".sinf"
-            )
-            sinf_path = bundle + "/SC_Info/" + sinf_name
-            if sinf_path not in names and filename.endswith(".v5.supf"):
+            if suffix in (".v5.supf", ".v4.supp"):
+                sinf_path = bundle + "/SC_Info/" + stem + ".v4.sinf"
+                if sinf_path not in names:
+                    sinf_path = bundle + "/SC_Info/" + stem + ".sinf"
+            else:
                 sinf_path = bundle + "/SC_Info/" + stem + ".sinf"
             if binary_path not in names:
                 raise ValueError(f"SUPF lacks binary/SINF: {supf_path}")
