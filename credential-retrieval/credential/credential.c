@@ -937,7 +937,8 @@ static int fairplay_selector(uint32_t *selector) {
         return -1;
     }
 
-    *selector = major <= 19 ? 9 : 21;
+    /* iOS 14 (Darwin 20) still uses selector 9, verified on iOS 14.0.1. */
+    *selector = major <= 20 ? 9 : 21;
     return 0;
 }
 
