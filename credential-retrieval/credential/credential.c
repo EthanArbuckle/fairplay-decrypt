@@ -933,11 +933,19 @@ static int fairplay_selector(uint32_t *selector) {
     char *end = NULL;
     errno = 0;
     unsigned long major = strtoul(system_info.release, &end, 10);
-    if (errno || end == system_info.release || (*end != '.' && *end != '\0')) {
+    if (errno || end == system_info.release || *end != '.') {
         return -1;
     }
 
-    *selector = major <= 19 ? 9 : 21;
+    char *minor_start = end + 1;
+    errno = 0;
+    unsigned long minor = strtoul(minor_start, &end, 10);
+    if (errno || end == minor_start || (*end != '.' && *end != '\0')) {
+        return -1;
+    }
+
+    /* Selector 9 works through iOS 14.4; assume selector 21 from iOS 14.5. */
+    *selector = (major <= 19 || (major == 20 && minor <= 3)) ? 9 : 21;
     return 0;
 }
 
