@@ -431,9 +431,8 @@ static int observe_fairplay(pid_t pid, uint32_t selector, SelectorReturnCallback
         }
     } else {
         void *symbol = dlsym(RTLD_DEFAULT, "IOConnectCallStructMethod");
-        uint8_t remote[16];
-        if (!symbol || read_remote(observer->task, (uint64_t)(uintptr_t)symbol, remote, sizeof(remote)) || memcmp(remote, symbol, sizeof(remote))) {
-            fprintf(stderr, "IOKit function is not mapped at the same address in fairplayd\n");
+        if (!symbol) {
+            fprintf(stderr, "IOConnectCallStructMethod not found locally\n");
             goto end;
         }
 
