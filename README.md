@@ -34,5 +34,9 @@ python decrypt.py /path/to/encrypted.ipa /path/to/decrypted.ipa \
 If `--credential` is omitted, the tool reads `./credential.bin`. The output
 path must not exist.
 
+By default, store metadata is removed from the output: `iTunesMetadata.plist`,
+`iTunesArtwork`, `META-INF/com.apple.*`, and `SC_Info/` directories. Pass
+`--keep-metadata` to keep them.
+
 The decryptor uses each IPA's SINF and SUPF records to derive page keys,
 decrypt its encrypted arm64 pages, and clear `cryptid`.
