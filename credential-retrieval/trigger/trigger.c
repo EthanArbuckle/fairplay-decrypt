@@ -181,7 +181,9 @@ int main(int argc, char **argv) {
     }
 
     if (remap(aligned, encrypted_length, encryption.cryptid, header.cputype, header.cpusubtype)) {
+        int denied = errno == EPERM;
         fprintf(stderr, "mremap_encrypted failed: %s\n", strerror(errno));
+        result = denied ? 3 : 1;
         goto end;
     }
 

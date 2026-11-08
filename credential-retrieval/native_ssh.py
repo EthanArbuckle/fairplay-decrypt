@@ -43,11 +43,6 @@ class SSHDevice:
             "-o",
             "BatchMode=yes",
             "-o",
-            # Older OpenSSH versions reject WarnWeakCrypto unless ignored explicitly.
-            "IgnoreUnknown=WarnWeakCrypto",
-            "-o",
-            "WarnWeakCrypto=no-pq-kex",
-            "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
             "UserKnownHostsFile=/dev/null",

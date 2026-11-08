@@ -9,6 +9,7 @@ import re
 import select
 import shlex
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -17,15 +18,88 @@ from zipfile import ZipFile
 from native_ssh import SSHDevice
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent))
+from core import derive_work16  # noqa: E402
+
 BUNDLE = ROOT / "build" / "bundle"
 DEVICE_FILES = (
     "credential.ios",
     "driver.ios",
     "trigger.ios",
+    "arcade-capture.ios",
     "static-key-table.bin",
     "core4-word-table.bin",
 )
 MAX_SINF_BYTES = 1 << 20
+SIDO_PATH = "/private/var/mobile/Library/FairPlay/iTunes_Control/iTunes/IC-Info.sido"
+ARCADE_INVERSES = bytes(pow(2 * index + 1, -1, 256) for index in range(16))
+
+
+def arcade_table_masks(image: bytes) -> list[bytes]:
+    masks = []
+    for offset in range(len(image) - 4096 + 1):
+        delta = image[offset] ^ image[offset + 16]
+        if (image[offset + 1] ^ image[offset + 17]) != delta or (
+            image[offset + 2] ^ image[offset + 18]
+        ) != delta:
+            continue
+
+        first = image[offset : offset + 16]
+        if len(set(first)) < 8 or any(
+            (image[offset + index] ^ image[offset + 16 + index]) != delta
+            for index in range(3, 16)
+        ):
+            continue
+
+        if all(
+            all(
+                (image[offset + row * 16 + index] ^ first[index])
+                == (image[offset + row * 16] ^ first[0])
+                for index in range(1, 16)
+            )
+            for row in range(2, 256)
+        ):
+            masks.append(bytes(value ^ first[0] for value in first))
+
+    return masks
+
+
+def arcade_credential(blocks: list[bytes], sinf: bytes, image: bytes) -> bytes:
+    if len(blocks) != 3:
+        raise ValueError("expected three Arcade block snapshots")
+
+    masks = arcade_table_masks(image)
+    if not masks:
+        raise RuntimeError("no Arcade table masks found in fairplayd")
+
+    for block in (blocks[1], blocks[0], blocks[2]):
+        for relative in masks:
+            for offset in range(len(block) - 15):
+                for base in range(256):
+                    candidate = bytes(
+                        (
+                            (
+                                (
+                                    block[offset + index]
+                                    ^ relative[(offset + index) & 15]
+                                    ^ base
+                                )
+                                - index
+                            )
+                            * ARCADE_INVERSES[index]
+                            & 255
+                        )
+                        ^ 0x30
+                        for index in range(16)
+                    )
+                    try:
+                        derive_work16(candidate, sinf)
+                    except ValueError:
+                        continue
+
+                    return candidate
+
+    raise RuntimeError("no Arcade credential found in the captured blocks")
 
 
 def connected_udid() -> str:
@@ -170,6 +244,7 @@ def trigger_app(
 ) -> tuple[str, str, bytes]:
     account = sinf_field(license_bytes, b"user") if license_bytes is not None else None
     key = sinf_field(license_bytes, b"key ") if license_bytes is not None else None
+    arcade = key is not None and key[0] == 4
     fallback: tuple[str, str, bytes] | None = None
     listing = device.run(
         "find /var/containers/Bundle/Application -type f -path '*/SC_Info/*.sinf' -print0"
@@ -187,6 +262,13 @@ def trigger_app(
                 account is not None and sinf_field(installed_sinf, b"user") != account
             ):
                 continue
+            installed_key = sinf_field(installed_sinf, b"key ")
+            if len(installed_key) != 4:
+                continue
+
+            if arcade and installed_key[0] != 4:
+                continue
+
             if license_bytes is None and not supported_sinf(installed_sinf):
                 continue
             info = plistlib.loads(device.read(str(bundle / "Info.plist")))
@@ -198,7 +280,7 @@ def trigger_app(
             ):
                 continue
             candidate = str(bundle), executable, installed_sinf
-            if key is None or sinf_field(installed_sinf, b"key ") == key:
+            if key is None or installed_key == key:
                 return candidate
             if fallback is None:
                 fallback = candidate
@@ -211,9 +293,9 @@ def trigger_app(
     )
 
 
-def fairplayd_pid(device: SSHDevice) -> int:
+def fairplayd_process(device: SSHDevice) -> tuple[int, str]:
     listing = device.processes().decode("utf-8", "replace")
-    pids = []
+    processes = []
     for line in listing.splitlines():
         fields = line.strip().split(None, 1)
         if (
@@ -221,10 +303,21 @@ def fairplayd_pid(device: SSHDevice) -> int:
             and fields[0].isdigit()
             and Path(fields[1]).name.split(".", 1)[0] == "fairplayd"
         ):
-            pids.append(int(fields[0]))
-    if len(pids) != 1:
-        raise RuntimeError(f"expected one fairplayd process; found {len(pids)}")
-    return pids[0]
+            processes.append((int(fields[0]), fields[1]))
+    if len(processes) != 1:
+        raise RuntimeError(f"expected one fairplayd process; found {len(processes)}")
+    return processes[0]
+
+
+def fairplayd_pid(device: SSHDevice) -> int:
+    return fairplayd_process(device)[0]
+
+
+def fairplayd_image(device: SSHDevice) -> bytes:
+    path = fairplayd_process(device)[1]
+    if not path.startswith("/"):
+        path = "/usr/sbin/" + Path(path).name
+    return device.read(path)
 
 
 def restart_fairplayd(device: SSHDevice) -> int:
@@ -264,14 +357,13 @@ def observe_uid_layer(
     output: str,
     trigger_program: str,
     executable: str,
-    license_path: str | None = None,
-    bundle_id: str | None = None,
     installed_executable: str | None = None,
+    sido_path: str | None = None,
 ) -> None:
     arguments = (
-        (program, "observe-uid-layer", str(pid), output, "90")
-        if license_path is None
-        else (program, "observe-credential", str(pid), license_path, output, "90")
+        (program, str(pid), sido_path, output, "90")
+        if sido_path is not None
+        else (program, "observe-uid-layer", str(pid), output, "90")
     )
     command = " ".join(map(shlex.quote, arguments))
     observer = subprocess.Popen(
@@ -304,18 +396,12 @@ def observe_uid_layer(
                 raise RuntimeError(
                     "FairPlay trigger failed: " + failure.decode("utf-8", "replace")
                 )
-            if bundle_id is not None:
-                device.run("command -v uiopen")
-                device.run(
-                    " ".join(map(shlex.quote, ("uiopen", "--bundleid", bundle_id)))
-                )
-            else:
-                direct_process = subprocess.Popen(
-                    device.command + [shlex.quote(executable)],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+            direct_process = subprocess.Popen(
+                device.command + [shlex.quote(executable)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         output_bytes, errors = observer.communicate(timeout=100)
         if observer.returncode:
             raise RuntimeError(
@@ -381,22 +467,10 @@ def main() -> None:
         installed_app, executable, installed_sinf = trigger_app(device, sinf)
         selected_sinf = sinf if sinf is not None else installed_sinf
         arcade = sinf_field(selected_sinf, b"key ")[0] == 4
-        if arcade and sinf_field(installed_sinf, b"key ") != sinf_field(
-            selected_sinf, b"key "
-        ):
-            raise RuntimeError(
-                "an installed app with this FairPlay selector is required"
-            )
+        daemon_image = fairplayd_image(device) if arcade else None
         license_path = device.write("license.sinf", selected_sinf)
-        bundle_id = None
-        installed_executable = None
-        if arcade:
-            installed_executable = str(Path(installed_app) / executable)
-            info = plistlib.loads(device.read(str(Path(installed_app) / "Info.plist")))
-            bundle_id = info["CFBundleIdentifier"]
-            if not isinstance(bundle_id, str) or not bundle_id or "/" in bundle_id:
-                raise ValueError("invalid installed app bundle identifier")
-            stop_remote(device, installed_executable)
+        installed_executable = str(Path(installed_app) / executable)
+        stop_remote(device, installed_executable)
         trigger_dir = device.trigger_directory
         device.run(
             "cp -R " + shlex.quote(installed_app) + " " + shlex.quote(trigger_dir)
@@ -406,18 +480,26 @@ def main() -> None:
         )
         uid_layer_path = device.path("uid-layer.bin")
         credential_path = device.path("credential.bin")
+        arcade_prefix = device.path("arcade")
         observe_uid_layer(
             device,
-            program,
+            device.path("arcade-capture.ios") if arcade else program,
             restart_fairplayd(device),
-            credential_path if arcade else uid_layer_path,
+            arcade_prefix if arcade else uid_layer_path,
             device.path("trigger.ios"),
             unique_executable,
-            license_path if arcade else None,
-            bundle_id,
             installed_executable,
+            SIDO_PATH if arcade else None,
         )
-        if not arcade:
+        if arcade:
+            if daemon_image is None:
+                raise RuntimeError("fairplayd image is unavailable")
+            credential = arcade_credential(
+                [device.read(f"{arcade_prefix}.block{index}") for index in range(1, 4)],
+                selected_sinf,
+                daemon_image,
+            )
+        else:
             device.run(
                 " ".join(
                     map(
@@ -432,7 +514,7 @@ def main() -> None:
                     )
                 )
             )
-        credential = device.read(credential_path)
+            credential = device.read(credential_path)
     finally:
         device.cleanup()
     os.umask(0o077)
