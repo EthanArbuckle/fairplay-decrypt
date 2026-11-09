@@ -7,9 +7,9 @@ gets it from a supported jailbroken device and writes
 
 Decryption runs on macOS and Linux.
 
-Supports version-3 and version-5 SUPF, 448-byte and 440-byte SINF `priv`
-records, and encrypted arm64 Mach-O slices. A 440-byte record must end in
-eight zero bytes.
+Supports v1/v4 SUPP and v3/v5 SUPF page-key containers, 448-byte and 440-byte
+SINF `priv` records, encrypted arm/arm64/arm64_32 Mach-O slices. A 440-byte
+record must end in eight zero bytes.
 
 ## Set up
 
@@ -34,5 +34,5 @@ python decrypt.py /path/to/encrypted.ipa /path/to/decrypted.ipa \
 If `--credential` is omitted, the tool reads `./credential.bin`. The output
 path must not exist.
 
-The decryptor uses each IPA's SINF and SUPF records to derive page keys,
-decrypt its encrypted arm64 pages, and clear `cryptid`.
+The decryptor uses each IPA's SINF and SUPF/SUPP records to derive page keys,
+decrypt its encrypted pages, and clear `cryptid`.
