@@ -171,7 +171,7 @@ def arm64_supf_record_offset(
     if (
         len(supf) < 12
         or supf[0] not in (3, 5)
-        or supf[1:4] not in (b"507", b"510", b"612")
+        or supf[1:4] not in (b"319", b"322", b"502", b"507", b"510", b"612")
     ):
         raise ValueError("unsupported SUPF format")
     header_size = 32 if supf[0] == 3 else 12
